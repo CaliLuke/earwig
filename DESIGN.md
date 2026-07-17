@@ -327,16 +327,23 @@ import path in favor of this service once stage B is trusted. Its
 Testing approach
 ----------------
 
-- **Go unit:** normalizer golden tests against the shared fixtures
-  (including trace-UUID equality with the reference implementation), sweep
-  planner selection logic, spool upsert/rehash, gap predicate truth table,
-  debounce/serialization, lock contention, UUIDv7 bit layout.
-- **Helper unit (Node):** list/read JSON contract against recorded SDK
-  payloads.
-- **Integration (local, non-billable):** sweep real on-disk Claude sessions
-  and a live `codex app-server`; kill -9 mid-sweep and verify convergence;
-  concurrent `watch` rejection; Opik drain including stopped-backend backlog;
-  spool-delete rebuild producing zero duplicate traces.
+The binding definition of done is [`VALIDATION.md`](./VALIDATION.md): every
+change must pass `scripts/verify` (hermetic) and `scripts/verify-live`
+(local integration), and completion reports must include their output. The
+notes below describe the intent behind those suites.
+
+- **Go unit:** byte-identical canonical normalization against generated Auto-K
+  reference fixtures, generated Python UUID vectors (including both Codex
+  identity paths), sweep planning, spool migrations/upsert/rehash, the gap
+  predicate, hook state safety, lock contention, and exporter row isolation.
+- **Helper unit (Node):** list/read JSON contract plus a hermetic end-to-end
+  sweep through the pinned SDK over a redacted recorded JSONL session in an
+  isolated `CLAUDE_CONFIG_DIR`.
+- **Integration (local, non-billable):** dedicated-project Opik create/update,
+  curation preservation, poisoned-row isolation, stopped-backend recovery,
+  and fail-closed prune; daemon SIGKILL convergence, concurrent-hook database
+  contention, timeout recovery, launchd environment simulation, stop/status,
+  and idle RSS. Every live artifact uses an isolated spool and is cleaned up.
 - **Manual:** one MCP-heavy Claude session driven to compaction with the
   daemon running (zero lost completed turns) and one across a stopped window
   (exactly one gap warning naming the session).

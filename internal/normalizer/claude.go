@@ -92,7 +92,14 @@ type claudeWork struct {
 	interrupted               bool
 }
 
-func newClaudeTurn() *claudeWork { return &claudeWork{index: map[string]int{}} }
+func newClaudeTurn() *claudeWork {
+	return &claudeWork{
+		users:      []map[string]any{},
+		assist:     []map[string]any{},
+		trajectory: []map[string]any{},
+		index:      map[string]int{},
+	}
+}
 func (w *claudeWork) observe(e map[string]any) {
 	if w.id == "" {
 		w.id = str(e, "uuid")

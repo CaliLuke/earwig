@@ -1,0 +1,240 @@
+{
+  "claude": {
+    "schema_version": 1,
+    "source": "claude-code-agent-sdk",
+    "capture": {
+      "fidelity": "full",
+      "redactions": {
+        "command_secret_patterns": true,
+        "binary_payloads": "omitted"
+      }
+    },
+    "session": {
+      "id": "0aaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+      "summary": "Fixture",
+      "cwd": "/tmp/earwig",
+      "git_branch": "main",
+      "created_at": 1784244889661,
+      "last_modified": 1784245288737,
+      "model": "claude-fable-5",
+      "compactions": [
+        {
+          "id": "c1",
+          "timestamp": "2026-07-16T10:05:00.000Z"
+        }
+      ],
+      "compaction_detection": "summary-prefix-best-effort",
+      "opaque_system_markers": 0
+    },
+    "turns": [
+      {
+        "id": "u1",
+        "status": "completed",
+        "started_at": "2026-07-16T10:00:00.000Z",
+        "completed_at": "2026-07-16T10:00:03.000Z",
+        "duration_ms": 3000,
+        "user_messages": [
+          {
+            "id": "u1",
+            "synthetic": false,
+            "content": [
+              {
+                "type": "text",
+                "text": "Build it"
+              }
+            ]
+          }
+        ],
+        "assistant_messages": [
+          {
+            "id": "a2",
+            "api_message_id": "api-a2",
+            "kind": "text",
+            "text": "Done."
+          }
+        ],
+        "final_answer": {
+          "id": "a2",
+          "api_message_id": "api-a2",
+          "kind": "text",
+          "text": "Done."
+        },
+        "trajectory": [
+          {
+            "id": "t1",
+            "type": "tool_use",
+            "tool": "Bash",
+            "status": "completed",
+            "requested_at": "2026-07-16T10:00:01.000Z",
+            "duration_ms": 1000,
+            "input": {
+              "command": "API_TOKEN=[REDACTED] echo ok"
+            },
+            "result": "ok"
+          }
+        ],
+        "following_user_messages": [
+          {
+            "id": "u3",
+            "content": [
+              {
+                "type": "text",
+                "text": "Next"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "u3",
+        "status": "failed",
+        "started_at": "2026-07-16T10:06:00.000Z",
+        "completed_at": "2026-07-16T10:06:01.000Z",
+        "duration_ms": 1000,
+        "user_messages": [
+          {
+            "id": "u3",
+            "synthetic": false,
+            "content": [
+              {
+                "type": "text",
+                "text": "Next"
+              }
+            ]
+          }
+        ],
+        "assistant_messages": [
+          {
+            "id": "a3",
+            "api_message_id": "api-a3",
+            "kind": "text",
+            "text": "Partial."
+          }
+        ],
+        "final_answer": {
+          "id": "a3",
+          "api_message_id": "api-a3",
+          "kind": "text",
+          "text": "Partial."
+        },
+        "trajectory": [],
+        "following_user_messages": []
+      }
+    ]
+  },
+  "codex": {
+    "schema_version": 1,
+    "source": "codex-app-server",
+    "capture": {
+      "fidelity": "full",
+      "redactions": {
+        "command_secret_patterns": true,
+        "binary_payloads": "omitted"
+      }
+    },
+    "session": {
+      "id": "01900000-0000-7000-8000-000000000001",
+      "session_id": "session-1",
+      "name": "Fixture",
+      "preview": "Build it",
+      "cwd": "/tmp/earwig",
+      "source": "appServer",
+      "model_provider": "openai",
+      "cli_version": "1",
+      "status": {
+        "type": "idle"
+      },
+      "created_at": 1784244000000,
+      "updated_at": 1784244002000,
+      "forked_from_id": null,
+      "parent_thread_id": null
+    },
+    "turns": [
+      {
+        "id": "turn_fixture_0001",
+        "status": "completed",
+        "started_at": 1784244000000,
+        "completed_at": 1784244001000,
+        "duration_ms": 1000,
+        "user_messages": [
+          {
+            "id": "u1",
+            "content": [
+              {
+                "type": "text",
+                "text": "Build it"
+              }
+            ]
+          }
+        ],
+        "assistant_messages": [
+          {
+            "id": "a1",
+            "phase": "final_answer",
+            "text": "Done"
+          }
+        ],
+        "final_answer": {
+          "id": "a1",
+          "phase": "final_answer",
+          "text": "Done"
+        },
+        "trajectory": [
+          {
+            "id": "c1",
+            "type": "commandExecution",
+            "status": "completed",
+            "command": "API_TOKEN=[REDACTED] echo ok",
+            "cwd": "/tmp/earwig",
+            "duration_ms": null,
+            "exit_code": 0,
+            "output": "ok"
+          }
+        ],
+        "error": null,
+        "following_user_messages": [
+          {
+            "id": "u2",
+            "content": [
+              {
+                "type": "text",
+                "text": "Next"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "turn_fixture_0002",
+        "status": "failed",
+        "started_at": 1784244001000,
+        "completed_at": 1784244002000,
+        "duration_ms": 1000,
+        "user_messages": [
+          {
+            "id": "u2",
+            "content": [
+              {
+                "type": "text",
+                "text": "Next"
+              }
+            ]
+          }
+        ],
+        "assistant_messages": [
+          {
+            "id": "a2",
+            "phase": "commentary",
+            "text": "Partial"
+          }
+        ],
+        "final_answer": null,
+        "trajectory": [],
+        "error": {
+          "message": "failed"
+        },
+        "following_user_messages": []
+      }
+    ]
+  }
+}

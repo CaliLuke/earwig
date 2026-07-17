@@ -1,0 +1,132 @@
+[
+  {
+    "name": "epoch",
+    "mode": "deterministic",
+    "timestamp_ms": 0,
+    "provider": "claude-code",
+    "session_id": "session",
+    "turn_id": "turn",
+    "expected": "00000000-0000-7c1f-932e-d61dd9980f02"
+  },
+  {
+    "name": "positive",
+    "mode": "deterministic",
+    "timestamp_ms": 1784244889700,
+    "provider": "claude-code",
+    "session_id": "session-a",
+    "turn_id": "turn-a",
+    "expected": "019f6d48-6864-7cd0-b3d0-f2d1bc21a656"
+  },
+  {
+    "name": "negative",
+    "mode": "deterministic",
+    "timestamp_ms": -5,
+    "provider": "claude-code",
+    "session_id": "session-a",
+    "turn_id": "turn-a",
+    "expected": "00000000-0000-7cd0-b3d0-f2d1bc21a656"
+  },
+  {
+    "name": "wrap-48-bit",
+    "mode": "deterministic",
+    "timestamp_ms": 281474976711890,
+    "provider": "claude-code",
+    "session_id": "session-a",
+    "turn_id": "turn-a",
+    "expected": "00000000-04d2-7cd0-b3d0-f2d1bc21a656"
+  },
+  {
+    "name": "unicode-turn",
+    "mode": "deterministic",
+    "timestamp_ms": 1784244889700,
+    "provider": "claude-code",
+    "session_id": "session-a",
+    "turn_id": "转弯-🦻",
+    "expected": "019f6d48-6864-7582-94c3-34e69e786c46"
+  },
+  {
+    "name": "unicode-session",
+    "mode": "deterministic",
+    "timestamp_ms": 1784244889700,
+    "provider": "claude-code",
+    "session_id": "セッション",
+    "turn_id": "turn-a",
+    "expected": "019f6d48-6864-7a52-b562-e898a82be8fa"
+  },
+  {
+    "name": "separator-left",
+    "mode": "deterministic",
+    "timestamp_ms": 42,
+    "provider": "claude-code",
+    "session_id": "a\u001fb",
+    "turn_id": "c",
+    "expected": "00000000-002a-78fa-9deb-79b9232fe09f"
+  },
+  {
+    "name": "separator-right",
+    "mode": "deterministic",
+    "timestamp_ms": 42,
+    "provider": "claude-code",
+    "session_id": "a",
+    "turn_id": "b\u001fc",
+    "expected": "00000000-002a-78fa-9deb-79b9232fe09f"
+  },
+  {
+    "name": "codex-fallback",
+    "mode": "deterministic",
+    "timestamp_ms": 1784244000000,
+    "provider": "codex",
+    "session_id": "thread",
+    "turn_id": "synthetic-turn",
+    "expected": "019f6d3a-d500-78f0-8306-16d3704d9422"
+  },
+  {
+    "name": "naive-timestamp",
+    "mode": "deterministic",
+    "timestamp_input": "2026-07-16T10:00:00",
+    "timestamp_ms": 1784196000000,
+    "provider": "claude-code",
+    "session_id": "session-time",
+    "turn_id": "naive-timestamp",
+    "expected": "019f6a5e-6900-73d9-9785-fdd67f83c109"
+  },
+  {
+    "name": "utc-timestamp",
+    "mode": "deterministic",
+    "timestamp_input": "2026-07-16T10:00:00Z",
+    "timestamp_ms": 1784196000000,
+    "provider": "claude-code",
+    "session_id": "session-time",
+    "turn_id": "utc-timestamp",
+    "expected": "019f6a5e-6900-78fd-a678-c0e4080cbdac"
+  },
+  {
+    "name": "offset-timestamp",
+    "mode": "deterministic",
+    "timestamp_input": "2026-07-16T03:00:00-07:00",
+    "timestamp_ms": 1784196000000,
+    "provider": "claude-code",
+    "session_id": "session-time",
+    "turn_id": "offset-timestamp",
+    "expected": "019f6a5e-6900-775d-a571-39e4a963733d"
+  },
+  {
+    "name": "invalid-timestamp",
+    "mode": "deterministic",
+    "timestamp_input": "not-a-time",
+    "timestamp_ms": 1234,
+    "provider": "claude-code",
+    "session_id": "session-time",
+    "turn_id": "invalid-timestamp",
+    "expected": "00000000-04d2-72b6-834f-c65fb9c8e7cb"
+  },
+  {
+    "name": "codex-native-uuidv7",
+    "mode": "codex-native",
+    "timestamp_ms": 1784244000000,
+    "provider": "codex",
+    "session_id": "thread",
+    "turn_id": "01900000-0000-7000-8000-000000000123",
+    "expected": "01900000-0000-7000-8000-000000000123"
+  }
+]

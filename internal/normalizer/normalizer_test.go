@@ -1,6 +1,7 @@
 package normalizer
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -25,26 +26,7 @@ func TestFixtureParityClaude(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	want := fixture(t, "expected.json")["claude"].(map[string]any)
-	if got.Source != "claude-code-agent-sdk" || got.Capture.Fidelity != "full" || len(got.Turns) != 2 {
-		t.Fatalf("contract drift: %#v", got)
-	}
-	for i, turn := range got.Turns {
-		w := want["turns"].([]any)[i].(map[string]any)
-		if turn.ID != w["id"] || turn.Status != w["status"] || turn.FinalAnswer.(map[string]any)["text"] != w["final"] {
-			t.Fatalf("turn %d mismatch: %#v", i, turn)
-		}
-		id := TraceID("claude-code", got.Session["id"].(string), turn, 0)
-		if id != want["trace_ids"].([]any)[i] {
-			t.Fatalf("trace %s", id)
-		}
-	}
-	if got.Turns[0].Trajectory[0]["input"].(map[string]any)["command"] != "API_TOKEN=[REDACTED] echo ok" {
-		t.Fatal("secret not redacted")
-	}
-	if len(got.Session["compactions"].([]any)) != 1 {
-		t.Fatal("compaction lost")
-	}
+	assertCanonicalJSON(t, got, generatedFixture(t)["claude"])
 }
 func TestFixtureParityCodex(t *testing.T) {
 	x := fixture(t, "codex.json")
@@ -52,17 +34,72 @@ func TestFixtureParityCodex(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	want := fixture(t, "expected.json")["codex"].(map[string]any)
-	if got.Source != "codex-app-server" || len(got.Turns) != 2 {
-		t.Fatal("contract drift")
+	assertCanonicalJSON(t, got, generatedFixture(t)["codex"])
+}
+
+func generatedFixture(t *testing.T) map[string]any {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join("..", "..", "testdata", "generated", "normalized.json"))
+	if err != nil {
+		t.Fatal(err)
 	}
-	for i, turn := range got.Turns {
-		w := want["turns"].([]any)[i].(map[string]any)
-		if turn.ID != w["id"] || turn.Status != w["status"] {
-			t.Fatal("turn mismatch")
+	var value map[string]any
+	if err = json.Unmarshal(b, &value); err != nil {
+		t.Fatal(err)
+	}
+	return value
+}
+
+func assertCanonicalJSON(t *testing.T, got, want any) {
+	t.Helper()
+	gotJSON, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var gotValue any
+	if err = json.Unmarshal(gotJSON, &gotValue); err != nil {
+		t.Fatal(err)
+	}
+	gotJSON, err = json.Marshal(gotValue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantJSON, err := json.Marshal(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(gotJSON, wantJSON) {
+		t.Fatalf("canonical transcript mismatch\n got: %s\nwant: %s", gotJSON, wantJSON)
+	}
+}
+
+func TestDeterministicTraceIDReferenceVectors(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join("..", "..", "testdata", "generated", "trace-id-vectors.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var vectors []struct {
+		Name        string `json:"name"`
+		Mode        string `json:"mode"`
+		TimestampMS int64  `json:"timestamp_ms"`
+		Provider    string `json:"provider"`
+		SessionID   string `json:"session_id"`
+		TurnID      string `json:"turn_id"`
+		Expected    string `json:"expected"`
+	}
+	if err = json.Unmarshal(b, &vectors); err != nil {
+		t.Fatal(err)
+	}
+	if len(vectors) < 10 {
+		t.Fatalf("only %d trace-ID vectors", len(vectors))
+	}
+	for _, vector := range vectors {
+		if vector.Mode != "deterministic" {
+			continue
 		}
-		if id := TraceID("codex", got.Session["id"].(string), turn, 0); id != want["trace_ids"].([]any)[i] {
-			t.Fatalf("trace %s", id)
+		got := DeterministicUUIDv7(vector.TimestampMS, vector.Provider, vector.SessionID, vector.TurnID)
+		if got != vector.Expected {
+			t.Errorf("%s: got %s, want %s", vector.Name, got, vector.Expected)
 		}
 	}
 }

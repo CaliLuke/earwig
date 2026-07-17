@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/CaliLuke/earwig/internal/normalizer"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -141,7 +142,6 @@ func TestOpenMigratesLegacyWholeTranscriptPayload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
 	rows, err := s.Pending("test", 10)
 	if err != nil || len(rows) != 1 {
 		t.Fatalf("%d, %v", len(rows), err)
@@ -152,6 +152,19 @@ func TestOpenMigratesLegacyWholeTranscriptPayload(t *testing.T) {
 	}
 	if payload["transcript"] != nil || payload["turn"] == nil || rows[0].Hash == "old-hash" {
 		t.Fatalf("legacy payload was not migrated: %#v", payload)
+	}
+	migratedPayload, migratedHash := rows[0].Payload, rows[0].Hash
+	if err = s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s, err = Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	rows, err = s.Pending("test", 10)
+	if err != nil || len(rows) != 1 || rows[0].Payload != migratedPayload || rows[0].Hash != migratedHash {
+		t.Fatalf("second open changed legacy migration: %#v, %v", rows, err)
 	}
 }
 
@@ -213,6 +226,39 @@ func TestCodexUsesNativeUUIDv7TraceIdentity(t *testing.T) {
 	}
 }
 
+func TestCodexTraceIdentityReferenceVectors(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join("..", "..", "testdata", "generated", "trace-id-vectors.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var vectors []struct {
+		Name        string `json:"name"`
+		Mode        string `json:"mode"`
+		TimestampMS int64  `json:"timestamp_ms"`
+		Provider    string `json:"provider"`
+		SessionID   string `json:"session_id"`
+		TurnID      string `json:"turn_id"`
+		Expected    string `json:"expected"`
+	}
+	if err = json.Unmarshal(b, &vectors); err != nil {
+		t.Fatal(err)
+	}
+	checked := 0
+	for _, vector := range vectors {
+		if vector.Provider != "codex" {
+			continue
+		}
+		turn := normalizer.Turn{ID: vector.TurnID, StartedAt: vector.TimestampMS, Status: "completed"}
+		if got := traceID("codex-app-server", vector.SessionID, turn, 0); got != vector.Expected {
+			t.Errorf("%s: got %s, want %s", vector.Name, got, vector.Expected)
+		}
+		checked++
+	}
+	if checked < 2 {
+		t.Fatalf("only %d Codex identity paths checked", checked)
+	}
+}
+
 func TestOpenMigratesCodexTraceIDsAndQueuesNativeExport(t *testing.T) {
 	const (
 		oldID    = "01900000-0000-7000-8000-000000000999"
@@ -244,7 +290,6 @@ func TestOpenMigratesCodexTraceIDsAndQueuesNativeExport(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
 	var oldTurns, nativeTurns, oldExports int
 	_ = s.DB.QueryRow(`SELECT COUNT(*) FROM turns WHERE trace_uuid=?`, oldID).Scan(&oldTurns)
 	_ = s.DB.QueryRow(`SELECT COUNT(*) FROM turns WHERE trace_uuid=?`, nativeID).Scan(&nativeTurns)
@@ -255,6 +300,18 @@ func TestOpenMigratesCodexTraceIDsAndQueuesNativeExport(t *testing.T) {
 	pending, err := s.Pending("opik", 10)
 	if err != nil || len(pending) != 1 || pending[0].TraceUUID != nativeID {
 		t.Fatalf("native export not queued: %#v, %v", pending, err)
+	}
+	if err = s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s, err = Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	pending, err = s.Pending("opik", 10)
+	if err != nil || len(pending) != 1 || pending[0].TraceUUID != nativeID {
+		t.Fatalf("second open changed Codex identity migration: %#v, %v", pending, err)
 	}
 }
 

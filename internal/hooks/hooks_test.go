@@ -1,12 +1,85 @@
 package hooks
 
 import (
+	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestInstallRemoveRoundTripIsByteIdentical(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	original := map[string]any{
+		"env": map[string]any{"ORG_POLICY": "enabled"},
+		"hooks": map[string]any{
+			"PreCompact": []any{map[string]any{"hooks": []any{map[string]any{"type": "command", "command": "/opt/org/precompact"}}}},
+			"Stop":       []any{map[string]any{"hooks": []any{map[string]any{"type": "command", "command": "/opt/org/stop"}}}},
+			"SessionEnd": []any{map[string]any{"hooks": []any{map[string]any{"type": "command", "command": "/opt/org/end"}}}},
+		},
+	}
+	if err := writeSettings(path, original); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = installAt(path, "/opt/earwig"); err != nil {
+		t.Fatal(err)
+	}
+	if err = installAt(path, "/opt/earwig"); err != nil {
+		t.Fatal(err)
+	}
+	if err = removeAt(path); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatalf("install/remove changed fixture bytes\nbefore: %s\nafter: %s", before, after)
+	}
+}
+
+func TestInvalidSettingsAreRefusedWithoutWrites(t *testing.T) {
+	for name, contents := range map[string]string{
+		"invalid-json":       `{"hooks":`,
+		"hooks-not-object":   `{"hooks":[]}`,
+		"event-not-array":    `{"hooks":{"Stop":{}}}`,
+		"commands-not-array": `{"hooks":{"Stop":[{"hooks":{}}]}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "settings.json")
+			if err := os.WriteFile(path, []byte(contents), 0600); err != nil {
+				t.Fatal(err)
+			}
+			before := sha256.Sum256([]byte(contents))
+			if err := installAt(path, "/opt/earwig"); err == nil {
+				t.Fatal("invalid settings were accepted")
+			}
+			afterBytes, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if after := sha256.Sum256(afterBytes); after != before {
+				t.Fatal("invalid settings were modified")
+			}
+		})
+	}
+}
+
+func TestPublicSettingsPathCanBeConfinedToFixtureHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	want := filepath.Join(home, ".claude", "settings.json")
+	if got := SettingsPath(); got != want {
+		t.Fatalf("settings path escaped fixture home: %q", got)
+	}
+}
 
 func readObject(t *testing.T, path string) map[string]any {
 	t.Helper()

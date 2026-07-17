@@ -71,6 +71,30 @@ func (o Opik) projectName() string {
 	}
 	return "earwig"
 }
+
+func (o Opik) httpClient(timeout time.Duration) *http.Client {
+	var client http.Client
+	if o.Client != nil {
+		client = *o.Client
+	} else {
+		client.Timeout = timeout
+	}
+	previousRedirectCheck := client.CheckRedirect
+	client.CheckRedirect = func(request *http.Request, via []*http.Request) error {
+		if err := loopback(request.URL.String()); err != nil {
+			return fmt.Errorf("reject Opik redirect: %w", err)
+		}
+		if previousRedirectCheck != nil {
+			return previousRedirectCheck(request, via)
+		}
+		if len(via) >= 10 {
+			return fmt.Errorf("stopped after 10 redirects")
+		}
+		return nil
+	}
+	return &client
+}
+
 func loopback(raw string) error {
 	u, e := url.Parse(raw)
 	if e != nil {
@@ -96,10 +120,7 @@ func (o Opik) Health() error {
 	if e := loopback(o.URL); e != nil {
 		return e
 	}
-	c := o.Client
-	if c == nil {
-		c = &http.Client{Timeout: 5 * time.Second}
-	}
+	c := o.httpClient(5 * time.Second)
 	r, e := c.Get(o.URL)
 	if e != nil {
 		return e
@@ -114,10 +135,7 @@ func (o Opik) Export(rows []spool.Row) error {
 	if e := loopback(o.URL); e != nil {
 		return e
 	}
-	c := o.Client
-	if c == nil {
-		c = &http.Client{Timeout: 15 * time.Second}
-	}
+	c := o.httpClient(15 * time.Second)
 	for _, r := range rows {
 		var p spool.TurnPayload
 		if e := json.Unmarshal([]byte(r.Payload), &p); e != nil {
@@ -201,10 +219,7 @@ func (o Opik) ProtectedTraceIDs(ids []string) (map[string]bool, error) {
 	if err := loopback(o.URL); err != nil {
 		return nil, err
 	}
-	client := o.Client
-	if client == nil {
-		client = &http.Client{Timeout: 15 * time.Second}
-	}
+	client := o.httpClient(15 * time.Second)
 	protected := map[string]bool{}
 	for _, id := range ids {
 		status, body, err := o.request(client, http.MethodGet, "/api/v1/private/traces/"+url.PathEscape(id), nil)

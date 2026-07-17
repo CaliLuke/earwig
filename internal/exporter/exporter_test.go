@@ -10,8 +10,21 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
+
+type redirectProbeTransport struct{ external atomic.Bool }
+
+func (p *redirectProbeTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	if request.URL.Hostname() != "127.0.0.1" {
+		p.external.Store(true)
+		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(strings.NewReader("ok")), Request: request}, nil
+	}
+	response := &http.Response{StatusCode: http.StatusFound, Status: "302 Found", Header: make(http.Header), Body: io.NopCloser(strings.NewReader("redirect")), Request: request}
+	response.Header.Set("Location", "https://example.com/escape")
+	return response, nil
+}
 
 func TestLoopbackGuard(t *testing.T) {
 	if loopback("https://example.com") == nil {
@@ -19,6 +32,20 @@ func TestLoopbackGuard(t *testing.T) {
 	}
 	if loopback("http://127.0.0.1:5173") != nil {
 		t.Fatal("rejected loopback")
+	}
+}
+
+func TestLoopbackGuardRejectsCredentialsAndExternalRedirects(t *testing.T) {
+	if loopback("http://user:secret@127.0.0.1:5173") == nil {
+		t.Fatal("allowed credentialed URL")
+	}
+	probe := &redirectProbeTransport{}
+	err := (Opik{URL: "http://127.0.0.1:5173", Client: &http.Client{Transport: probe}}).Health()
+	if err == nil || !strings.Contains(err.Error(), "loopback") {
+		t.Fatalf("external redirect was not rejected: %v", err)
+	}
+	if probe.external.Load() {
+		t.Fatal("client followed redirect to a non-loopback host")
 	}
 }
 func TestJSONDirIdempotentDrain(t *testing.T) {

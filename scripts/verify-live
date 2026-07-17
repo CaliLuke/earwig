@@ -1,0 +1,50 @@
+#!/bin/sh
+set -eu
+
+repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+cd "$repo_root"
+
+live_tmp=$(mktemp -d "${TMPDIR:-/tmp}/earwig-verify-live.XXXXXX")
+cleanup() {
+  case "$live_tmp" in
+    "${TMPDIR:-/tmp}"/earwig-verify-live.*)
+      rm -rf -- "$live_tmp"
+      ;;
+    *)
+      printf 'refusing to clean unexpected temp path %s\n' "$live_tmp" >&2
+      ;;
+  esac
+}
+trap cleanup EXIT INT TERM
+
+binary="$live_tmp/earwig"
+v4_output="$live_tmp/v4.log"
+v5_output="$live_tmp/v5.log"
+go build -o "$binary" ./cmd/earwig
+printf 'EARWIG_OPIK_URL=%s\n' "${EARWIG_OPIK_URL:-http://127.0.0.1:5173}"
+
+run_group() {
+  label=$1
+  pattern=$2
+  group_output=$3
+  printf '\n=== %s ===\n' "$label"
+  if EARWIG_LIVE_BIN="$binary" EARWIG_OPIK_URL="${EARWIG_OPIK_URL:-http://127.0.0.1:5173}" \
+    go test -tags=live -v ./internal/livevalidation -run "$pattern" -count=1 >"$group_output" 2>&1; then
+    cat "$group_output"
+  else
+    status=$?
+    cat "$group_output"
+    exit "$status"
+  fi
+}
+
+run_group 'V4 live Opik integration' '^TestV4' "$v4_output"
+run_group 'V5 daemon lifecycle' '^TestV5' "$v5_output"
+
+skip_count=$(cat "$v4_output" "$v5_output" | grep -c -- '--- SKIP:' || true)
+if [ "$skip_count" -eq 0 ]; then
+  printf 'SKIPS: none\n'
+else
+  printf 'SKIPS: %s (reasons printed above)\n' "$skip_count"
+fi
+printf 'VERIFY-LIVE PASS\n'

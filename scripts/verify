@@ -1,0 +1,47 @@
+#!/bin/sh
+set -eu
+
+repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+cd "$repo_root"
+
+section() { printf '\n=== %s ===\n' "$1"; }
+
+section 'V1 static gates'
+gofmt_output=$(gofmt -l .)
+if [ -n "$gofmt_output" ]; then
+  printf '%s\n' "$gofmt_output"
+  exit 1
+fi
+printf 'PASS gofmt -l . (no output)\n'
+go vet ./...
+printf 'PASS go vet ./...\n'
+go test ./...
+go test -race ./...
+npm test --prefix helpers/claude-reader
+node scripts/check-helper-pin.mjs
+
+section 'V2 generated reference parity'
+test -s testdata/generated/normalized.json
+test -s testdata/generated/trace-id-vectors.json
+test -x scripts/generate-reference-fixtures.mjs
+test -x scripts/reference_uuid_vectors.py
+go test -v ./internal/normalizer -run 'TestFixtureParity|TestDeterministicTraceIDReferenceVectors'
+go test -v ./internal/spool -run 'TestCodexTraceIdentityReferenceVectors'
+printf 'PASS generated Auto-K canonical fixtures and trace-ID vectors\n'
+
+section 'V3 hermetic end-to-end'
+go test -v ./internal/daemon -run 'TestHermeticClaudeSDKEndToEnd|TestClaudeSweepReadsOnlyNewOrChangedSessions|TestGapDetectionExemptsFirstSeenSession'
+go test -v ./internal/spool -run 'TestOpenMigratesLegacyWholeTranscriptPayload|TestOpenMigratesCodexTraceIDsAndQueuesNativeExport'
+printf 'PASS hermetic provider, planner, gap, and migration checks\n'
+
+section 'V6 user-state safety invariants'
+go test -v ./internal/hooks -run 'TestInstallRemoveRoundTripIsByteIdentical|TestInstallMergesAndRemoveIsSurgical|TestInvalidSettingsAreRefusedWithoutWrites|TestPublicSettingsPathCanBeConfinedToFixtureHome'
+go test -v ./internal/exporter -run 'TestLoopbackGuard'
+unsafe_access=$(rg -n 'os\.(Open|ReadFile)\([^\n]*(\.claude|projects|sessions)|bufio\.[A-Za-z]+\([^\n]*(\.claude|projects|sessions)' cmd internal --glob '*.go' --glob '!internal/daemon/watch.go' || true)
+if [ -n "$unsafe_access" ]; then
+  printf 'unsupported direct provider storage access:\n%s\n' "$unsafe_access"
+  exit 1
+fi
+printf 'PASS supported-surface filesystem tripwire\n'
+
+printf '\nVERIFY PASS\n'
