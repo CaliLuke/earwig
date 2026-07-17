@@ -76,7 +76,7 @@ func main() {
 		} else {
 			fmt.Println("daemon: stopped")
 		}
-		for _, key := range []string{"last_sweep_started", "last_sweep_success"} {
+		for _, key := range []string{"last_poll", "last_sweep_started", "last_sweep_success"} {
 			if v, err := s.GetHealth(key); err == nil {
 				fmt.Printf("%s: %s\n", key, v)
 			}
@@ -84,7 +84,14 @@ func main() {
 		var sessions, compactions int
 		_ = s.DB.QueryRow(`SELECT COUNT(*), COALESCE(SUM(compaction_count),0) FROM sessions`).Scan(&sessions, &compactions)
 		fmt.Printf("sessions: %d; compactions observed: %d\n", sessions, compactions)
-		for _, name := range []string{"jsondir", "opik"} {
+		names := []string{}
+		if cfg.JSONDir != "" {
+			names = append(names, "jsondir")
+		}
+		if cfg.OpikURL != "" {
+			names = append(names, "opik")
+		}
+		for _, name := range names {
 			v, e := s.GetHealth("exporter_" + name + "_behind")
 			if e == nil && v != "null" {
 				behind = true

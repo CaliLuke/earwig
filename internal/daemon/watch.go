@@ -57,6 +57,7 @@ type Watcher struct {
 }
 
 func (w *Watcher) trigger(ctx context.Context) {
+	w.Sweeper.note("last_poll", time.Now())
 	w.mu.Lock()
 	if w.running {
 		w.dirty = true
