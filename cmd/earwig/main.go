@@ -71,11 +71,28 @@ func main() {
 			fatal(e)
 		}
 		behind := false
+		if b, err := os.ReadFile(spool.DefaultPath() + ".lock"); err == nil {
+			fmt.Printf("daemon: running (pid %s)\n", strings.TrimSpace(string(b)))
+		} else {
+			fmt.Println("daemon: stopped")
+		}
+		for _, key := range []string{"last_sweep_started", "last_sweep_success"} {
+			if v, err := s.GetHealth(key); err == nil {
+				fmt.Printf("%s: %s\n", key, v)
+			}
+		}
+		var sessions, compactions int
+		_ = s.DB.QueryRow(`SELECT COUNT(*), COALESCE(SUM(compaction_count),0) FROM sessions`).Scan(&sessions, &compactions)
+		fmt.Printf("sessions: %d; compactions observed: %d\n", sessions, compactions)
 		for _, name := range []string{"jsondir", "opik"} {
 			v, e := s.GetHealth("exporter_" + name + "_behind")
 			if e == nil && v != "null" {
 				behind = true
 				fmt.Printf("%s: behind (%s)\n", name, v)
+			}
+			if n, err := s.Pending(name, 1<<30); err == nil && len(n) > 0 {
+				behind = true
+				fmt.Printf("%s: %d pending\n", name, len(n))
 			}
 		}
 		fmt.Printf("turns: %d total / %d last 24h\n", total, recent)
