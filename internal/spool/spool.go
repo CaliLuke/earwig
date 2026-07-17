@@ -23,6 +23,10 @@ type Row struct {
 	StartedMS, CompletedMS, CapturedMS                            int64
 }
 
+type ExportFailure struct {
+	TraceUUID, Error string
+}
+
 // TurnPayload is the durable/exported unit. It deliberately excludes the
 // transcript's turns array and mutable session fields, so activity later in a
 // session cannot rewrite every turn already captured.
@@ -51,7 +55,7 @@ func Open(path string) (*Spool, error) {
 	// racing the resident daemon.
 	db.SetMaxOpenConns(1)
 	s := &Spool{db, path}
-	_, e = db.Exec(`PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS sessions(provider TEXT, session_id TEXT, cwd TEXT, summary TEXT, last_modified_ms INTEGER, last_swept_ms INTEGER, compaction_count INTEGER DEFAULT 0, gap_warned INTEGER DEFAULT 0, PRIMARY KEY(provider,session_id)); CREATE TABLE IF NOT EXISTS turns(trace_uuid TEXT PRIMARY KEY, provider TEXT, session_id TEXT, turn_id TEXT, turn_status TEXT, started_at_ms INTEGER, completed_at_ms INTEGER, payload_json TEXT, content_hash TEXT, captured_at_ms INTEGER); CREATE TABLE IF NOT EXISTS exports(trace_uuid TEXT, exporter TEXT, exported_at_ms INTEGER, content_hash TEXT, PRIMARY KEY(trace_uuid,exporter)); CREATE TABLE IF NOT EXISTS health(key TEXT PRIMARY KEY,value_json TEXT);`)
+	_, e = db.Exec(`PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS sessions(provider TEXT, session_id TEXT, cwd TEXT, summary TEXT, last_modified_ms INTEGER, last_swept_ms INTEGER, compaction_count INTEGER DEFAULT 0, gap_warned INTEGER DEFAULT 0, PRIMARY KEY(provider,session_id)); CREATE TABLE IF NOT EXISTS turns(trace_uuid TEXT PRIMARY KEY, provider TEXT, session_id TEXT, turn_id TEXT, turn_status TEXT, started_at_ms INTEGER, completed_at_ms INTEGER, payload_json TEXT, content_hash TEXT, captured_at_ms INTEGER); CREATE TABLE IF NOT EXISTS exports(trace_uuid TEXT, exporter TEXT, exported_at_ms INTEGER, content_hash TEXT, PRIMARY KEY(trace_uuid,exporter)); CREATE TABLE IF NOT EXISTS export_failures(trace_uuid TEXT, exporter TEXT, target_key TEXT, failed_at_ms INTEGER, content_hash TEXT, error TEXT, permanent INTEGER, PRIMARY KEY(trace_uuid,exporter)); CREATE TABLE IF NOT EXISTS health(key TEXT PRIMARY KEY,value_json TEXT);`)
 	if e != nil {
 		db.Close()
 		return nil, e
@@ -235,6 +239,9 @@ func (s *Spool) migrateCodexTraceIDs() error {
 		if _, err = tx.Exec(`DELETE FROM exports WHERE trace_uuid=?`, item.oldID); err != nil {
 			return err
 		}
+		if _, err = tx.Exec(`DELETE FROM export_failures WHERE trace_uuid=?`, item.oldID); err != nil {
+			return err
+		}
 		var exists int
 		if err = tx.QueryRow(`SELECT COUNT(*) FROM turns WHERE trace_uuid=?`, item.newID).Scan(&exists); err != nil {
 			return err
@@ -333,6 +340,26 @@ func (s *Spool) Pending(exporter string, limit int) ([]Row, error) {
 	return out, rows.Err()
 }
 
+// PendingFor excludes only permanent failures for the same payload and
+// exporter target. A content change or target configuration change makes the
+// row eligible automatically.
+func (s *Spool) PendingFor(exporter, targetKey string, limit int) ([]Row, error) {
+	rows, e := s.DB.Query(`SELECT t.trace_uuid,t.provider,t.session_id,t.turn_id,t.turn_status,t.started_at_ms,t.completed_at_ms,t.payload_json,t.content_hash,t.captured_at_ms FROM turns t LEFT JOIN exports e ON e.trace_uuid=t.trace_uuid AND e.exporter=? LEFT JOIN export_failures f ON f.trace_uuid=t.trace_uuid AND f.exporter=? WHERE (e.trace_uuid IS NULL OR e.content_hash<>t.content_hash) AND NOT (COALESCE(f.permanent,0)=1 AND f.content_hash=t.content_hash AND f.target_key=?) ORDER BY t.started_at_ms LIMIT ?`, exporter, exporter, targetKey, limit)
+	if e != nil {
+		return nil, e
+	}
+	defer rows.Close()
+	out := []Row{}
+	for rows.Next() {
+		var r Row
+		if e = rows.Scan(&r.TraceUUID, &r.Provider, &r.SessionID, &r.TurnID, &r.Status, &r.StartedMS, &r.CompletedMS, &r.Payload, &r.Hash, &r.CapturedMS); e != nil {
+			return nil, e
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 func (s *Spool) PendingCount(exporter string) (int, error) {
 	var count int
 	err := s.DB.QueryRow(`SELECT COUNT(*) FROM turns t LEFT JOIN exports e ON e.trace_uuid=t.trace_uuid AND e.exporter=? WHERE e.trace_uuid IS NULL OR e.content_hash<>t.content_hash`, exporter).Scan(&count)
@@ -348,8 +375,37 @@ func (s *Spool) MarkExported(exporter string, rows []Row, now time.Time) error {
 		if _, e = tx.Exec(`INSERT INTO exports(trace_uuid,exporter,exported_at_ms,content_hash) VALUES(?,?,?,?) ON CONFLICT(trace_uuid,exporter) DO UPDATE SET exported_at_ms=excluded.exported_at_ms,content_hash=excluded.content_hash`, r.TraceUUID, exporter, now.UnixMilli(), r.Hash); e != nil {
 			return e
 		}
+		if _, e = tx.Exec(`DELETE FROM export_failures WHERE trace_uuid=? AND exporter=?`, r.TraceUUID, exporter); e != nil {
+			return e
+		}
 	}
 	return tx.Commit()
+}
+
+func (s *Spool) RecordExportFailure(exporter, targetKey string, row Row, err error, permanent bool, now time.Time) error {
+	message := err.Error()
+	if len(message) > 4096 {
+		message = message[:4096]
+	}
+	_, e := s.DB.Exec(`INSERT INTO export_failures(trace_uuid,exporter,target_key,failed_at_ms,content_hash,error,permanent) VALUES(?,?,?,?,?,?,?) ON CONFLICT(trace_uuid,exporter) DO UPDATE SET target_key=excluded.target_key,failed_at_ms=excluded.failed_at_ms,content_hash=excluded.content_hash,error=excluded.error,permanent=excluded.permanent`, row.TraceUUID, exporter, targetKey, now.UnixMilli(), row.Hash, message, permanent)
+	return e
+}
+
+func (s *Spool) ActivePermanentFailures(exporter, targetKey string, limit int) ([]ExportFailure, error) {
+	rows, err := s.DB.Query(`SELECT f.trace_uuid,f.error FROM export_failures f JOIN turns t ON t.trace_uuid=f.trace_uuid LEFT JOIN exports e ON e.trace_uuid=t.trace_uuid AND e.exporter=f.exporter WHERE f.exporter=? AND f.target_key=? AND f.permanent=1 AND f.content_hash=t.content_hash AND (e.trace_uuid IS NULL OR e.content_hash<>t.content_hash) ORDER BY f.failed_at_ms DESC LIMIT ?`, exporter, targetKey, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	failures := []ExportFailure{}
+	for rows.Next() {
+		var failure ExportFailure
+		if err = rows.Scan(&failure.TraceUUID, &failure.Error); err != nil {
+			return nil, err
+		}
+		failures = append(failures, failure)
+	}
+	return failures, rows.Err()
 }
 func (s *Spool) SetHealth(k string, v any) error {
 	b, e := json.Marshal(v)
@@ -404,6 +460,9 @@ func (s *Spool) Prune(before time.Time, protected map[string]bool) (int64, error
 		return 0, err
 	}
 	if _, err = tx.Exec(`DELETE FROM exports WHERE EXISTS (SELECT 1 FROM prune_delete p WHERE p.trace_uuid=exports.trace_uuid)`); err != nil {
+		return 0, err
+	}
+	if _, err = tx.Exec(`DELETE FROM export_failures WHERE EXISTS (SELECT 1 FROM prune_delete p WHERE p.trace_uuid=export_failures.trace_uuid)`); err != nil {
 		return 0, err
 	}
 	result, err := tx.Exec(`DELETE FROM turns WHERE EXISTS (SELECT 1 FROM prune_delete p WHERE p.trace_uuid=turns.trace_uuid)`)

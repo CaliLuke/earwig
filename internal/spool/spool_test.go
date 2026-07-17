@@ -3,6 +3,7 @@ package spool
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"github.com/CaliLuke/earwig/internal/normalizer"
 	"path/filepath"
 	"testing"
@@ -278,5 +279,32 @@ func TestPruneRetainsProtectedTracesAndCountsWithoutPayloads(t *testing.T) {
 	var remaining string
 	if err = s.DB.QueryRow(`SELECT trace_uuid FROM turns`).Scan(&remaining); err != nil || remaining != "keep" {
 		t.Fatalf("remaining = %q, %v", remaining, err)
+	}
+}
+
+func TestPermanentExportFailureRetriesOnContentOrTargetChange(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "spool.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	row := Row{TraceUUID: "trace", Provider: "p", SessionID: "session", TurnID: "turn", Status: "completed", Payload: `{}`, Hash: "hash-1"}
+	if _, err = s.DB.Exec(`INSERT INTO turns VALUES(?,?,?,?,?,?,?,?,?,?)`, row.TraceUUID, row.Provider, row.SessionID, row.TurnID, row.Status, 1, 2, row.Payload, row.Hash, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.RecordExportFailure("opik", "target-a", row, fmt.Errorf("permanent"), true, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if pending, pendingErr := s.PendingFor("opik", "target-a", 10); pendingErr != nil || len(pending) != 0 {
+		t.Fatalf("same failure was not quarantined: %#v, %v", pending, pendingErr)
+	}
+	if pending, pendingErr := s.PendingFor("opik", "target-b", 10); pendingErr != nil || len(pending) != 1 {
+		t.Fatalf("target change did not retry: %#v, %v", pending, pendingErr)
+	}
+	if _, err = s.DB.Exec(`UPDATE turns SET content_hash='hash-2' WHERE trace_uuid='trace'`); err != nil {
+		t.Fatal(err)
+	}
+	if pending, pendingErr := s.PendingFor("opik", "target-a", 10); pendingErr != nil || len(pending) != 1 {
+		t.Fatalf("content change did not retry: %#v, %v", pending, pendingErr)
 	}
 }

@@ -201,6 +201,9 @@ turns(trace_uuid PRIMARY KEY, provider, session_id, turn_id, turn_status,
       captured_at_ms);
 exports(trace_uuid, exporter, exported_at_ms, content_hash,
         PRIMARY KEY (trace_uuid, exporter));
+export_failures(trace_uuid, exporter, target_key, failed_at_ms,
+                content_hash, error, permanent,
+                PRIMARY KEY (trace_uuid, exporter));
 health(key PRIMARY KEY, value_json);
 ```
 
@@ -232,7 +235,11 @@ check; failures mark the exporter `behind` and the sweep continues. Built-in:
   policy, and source identity stay in `metadata`. Project name is configurable
   (`opik_project`, default `OPIK_PROJECT_NAME` or `earwig`); threads use the
   session ID and tags include `auto-checkpoint`, `inbox`, provider, and status.
-  It never adds anything to annotation queues — curation
+  PATCH deliberately omits `name` and `tags`: once a trace exists, those are
+  upstream-owned curation state and Earwig must not erase `promoted`, `kept`,
+  or another importer's review labels. For identity continuity with Auto-K,
+  configure `opik_project = "autok-agent-evals"`. It never adds anything to
+  annotation queues — curation
   (promote/discard) is the consumer's job (for Auto-K, tooling in
   autok-server's `agent-eval`; for others, the Opik UI).
 - **jsondir** — writes normalized transcripts under a directory tree; the
@@ -282,6 +289,11 @@ Error handling
 - **Exporter down:** capture continues; row stays unexported; `status` says
   `behind`; next healthy sweep drains. The daemon never starts Docker/Colima
   or any backend.
+- **Permanent exporter row failure:** record the trace, payload hash, exporter
+  target, and error; continue exporting later rows; keep the exporter visibly
+  behind. The quarantined row retries automatically when its content changes
+  or exporter URL/project changes. Opik cross-project conflicts explicitly
+  direct Auto-K users to `autok-agent-evals`.
 - **Provider read failure:** skip that session, join the error into the sweep
   result, and surface it in health/status immediately. Its mtime checkpoint is
   not advanced, so the next trigger retries without a hot inner loop.

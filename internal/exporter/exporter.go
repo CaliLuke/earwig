@@ -3,6 +3,7 @@ package exporter
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/CaliLuke/earwig/internal/spool"
 	"io"
@@ -20,10 +21,24 @@ type Exporter interface {
 	Export([]spool.Row) error
 	Health() error
 }
+
+type targetKeyer interface{ TargetKey() string }
+
+type permanentError struct{ err error }
+
+func (e permanentError) Error() string { return e.err.Error() }
+func (e permanentError) Unwrap() error { return e.err }
+
+func isPermanent(err error) bool {
+	var target permanentError
+	return errors.As(err, &target)
+}
+
 type JSONDir struct{ Dir string }
 
-func (j JSONDir) Name() string  { return "jsondir" }
-func (j JSONDir) Health() error { return os.MkdirAll(j.Dir, 0700) }
+func (j JSONDir) Name() string      { return "jsondir" }
+func (j JSONDir) TargetKey() string { return filepath.Clean(j.Dir) }
+func (j JSONDir) Health() error     { return os.MkdirAll(j.Dir, 0700) }
 func (j JSONDir) Export(rows []spool.Row) error {
 	if e := j.Health(); e != nil {
 		return e
@@ -47,6 +62,15 @@ type Opik struct {
 }
 
 func (o Opik) Name() string { return "opik" }
+func (o Opik) TargetKey() string {
+	return strings.TrimRight(o.URL, "/") + "\x1f" + o.projectName()
+}
+func (o Opik) projectName() string {
+	if o.ProjectName != "" {
+		return o.ProjectName
+	}
+	return "earwig"
+}
 func loopback(raw string) error {
 	u, e := url.Parse(raw)
 	if e != nil {
@@ -97,12 +121,9 @@ func (o Opik) Export(rows []spool.Row) error {
 	for _, r := range rows {
 		var p spool.TurnPayload
 		if e := json.Unmarshal([]byte(r.Payload), &p); e != nil {
-			return e
+			return permanentError{fmt.Errorf("invalid spooled turn payload: %w", e)}
 		}
-		project := o.ProjectName
-		if project == "" {
-			project = "earwig"
-		}
+		project := o.projectName()
 		mapped := mapTurnPayload(p, r)
 		create := map[string]any{
 			"id":           r.TraceUUID,
@@ -124,12 +145,10 @@ func (o Opik) Export(rows []spool.Row) error {
 		if status == http.StatusConflict {
 			update := map[string]any{
 				"thread_id":    r.SessionID,
-				"name":         create["name"],
 				"end_time":     create["end_time"],
 				"input":        create["input"],
 				"output":       create["output"],
 				"metadata":     create["metadata"],
-				"tags":         create["tags"],
 				"project_name": project,
 				"source":       "sdk",
 			}
@@ -137,9 +156,16 @@ func (o Opik) Export(rows []spool.Row) error {
 			if e != nil {
 				return e
 			}
+			if status == http.StatusConflict {
+				return permanentError{fmt.Errorf("Opik trace %s belongs to a different project; configure opik_project to match the existing trace (Auto-K uses autok-agent-evals): %s", r.TraceUUID, strings.TrimSpace(string(responseBody)))}
+			}
 		}
 		if status < 200 || status >= 300 {
-			return fmt.Errorf("Opik export: HTTP %d: %s", status, string(responseBody))
+			err := fmt.Errorf("Opik export: HTTP %d: %s", status, string(responseBody))
+			if status >= 400 && status < 500 {
+				return permanentError{err}
+			}
+			return err
 		}
 	}
 	return nil
@@ -237,15 +263,44 @@ func providerTraceName(provider string) string {
 	return "earwig-turn"
 }
 func Drain(s *spool.Spool, e Exporter) error {
-	rows, err := s.Pending(e.Name(), 500)
+	targetKey := e.Name()
+	if keyed, ok := e.(targetKeyer); ok {
+		targetKey = keyed.TargetKey()
+	}
+	rows, err := s.PendingFor(e.Name(), targetKey, 500)
 	if err != nil {
 		return err
 	}
-	if len(rows) == 0 {
-		return nil
+	succeeded := []spool.Row{}
+	failures := []error{}
+	for _, row := range rows {
+		exportErr := e.Export([]spool.Row{row})
+		if exportErr == nil {
+			succeeded = append(succeeded, row)
+			continue
+		}
+		permanent := isPermanent(exportErr)
+		if recordErr := s.RecordExportFailure(e.Name(), targetKey, row, exportErr, permanent, time.Now()); recordErr != nil {
+			failures = append(failures, fmt.Errorf("record %s failure for trace %s: %w", e.Name(), row.TraceUUID, recordErr))
+			break
+		}
+		if permanent {
+			continue
+		}
+		failures = append(failures, fmt.Errorf("%s trace %s: %w", e.Name(), row.TraceUUID, exportErr))
+		break
 	}
-	if err = e.Export(rows); err != nil {
-		return err
+	if len(succeeded) > 0 {
+		if err = s.MarkExported(e.Name(), succeeded, time.Now()); err != nil {
+			failures = append(failures, err)
+		}
 	}
-	return s.MarkExported(e.Name(), rows, time.Now())
+	quarantined, err := s.ActivePermanentFailures(e.Name(), targetKey, 10)
+	if err != nil {
+		failures = append(failures, err)
+	} else if len(quarantined) > 0 {
+		first := quarantined[0]
+		failures = append(failures, fmt.Errorf("%s has quarantined traces; most recent is %s: %s", e.Name(), first.TraceUUID, first.Error))
+	}
+	return errors.Join(failures...)
 }
