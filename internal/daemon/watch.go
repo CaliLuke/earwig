@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"github.com/CaliLuke/earwig/internal/spool"
 	"github.com/fsnotify/fsnotify"
@@ -10,37 +11,89 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
 type Lock struct {
-	path string
 	file *os.File
 }
 
 func Acquire(path string) (*Lock, error) {
-	f, e := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	f, e := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0600)
 	if e != nil {
 		return nil, e
 	}
-	_, _ = fmt.Fprint(f, os.Getpid())
-	return &Lock{path, f}, nil
+	if e = syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); e != nil {
+		_ = f.Close()
+		if errors.Is(e, syscall.EWOULDBLOCK) || errors.Is(e, syscall.EAGAIN) {
+			if pid, running, statusErr := LockStatus(path); statusErr == nil && running {
+				return nil, fmt.Errorf("daemon already running (pid %d)", pid)
+			}
+			return nil, fmt.Errorf("daemon already running")
+		}
+		return nil, e
+	}
+	if e = f.Truncate(0); e == nil {
+		_, e = f.Seek(0, 0)
+	}
+	if e == nil {
+		_, e = fmt.Fprint(f, os.Getpid())
+	}
+	if e != nil {
+		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		_ = f.Close()
+		return nil, e
+	}
+	_ = f.Sync()
+	return &Lock{file: f}, nil
 }
 func (l *Lock) Release() {
 	if l == nil {
 		return
 	}
+	_ = syscall.Flock(int(l.file.Fd()), syscall.LOCK_UN)
 	_ = l.file.Close()
-	_ = os.Remove(l.path)
 }
+
+// LockStatus distinguishes a live owner from a stale, intentionally
+// persistent lock file. flock ownership is released by the kernel on exit,
+// including SIGKILL.
+func LockStatus(path string) (pid int, running bool, err error) {
+	f, err := os.OpenFile(path, os.O_RDWR, 0600)
+	if os.IsNotExist(err) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	defer f.Close()
+	if err = syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err == nil {
+		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		return 0, false, nil
+	}
+	if !errors.Is(err, syscall.EWOULDBLOCK) && !errors.Is(err, syscall.EAGAIN) {
+		return 0, false, err
+	}
+	b := make([]byte, 64)
+	n, readErr := f.ReadAt(b, 0)
+	if readErr != nil && n == 0 {
+		return 0, true, readErr
+	}
+	pid, err = strconv.Atoi(strings.TrimSpace(string(b[:n])))
+	if err != nil || pid <= 1 {
+		return 0, true, fmt.Errorf("daemon lock contains invalid pid")
+	}
+	return pid, true, nil
+}
+
 func Stop(path string) error {
-	b, e := os.ReadFile(path)
+	pid, running, e := LockStatus(path)
 	if e != nil {
 		return e
 	}
-	pid, e := strconv.Atoi(strings.TrimSpace(string(b)))
-	if e != nil {
-		return e
+	if !running {
+		return fmt.Errorf("daemon is not running")
 	}
 	p, e := os.FindProcess(pid)
 	if e != nil {
@@ -52,6 +105,7 @@ func Stop(path string) error {
 type Watcher struct {
 	Sweeper        *Sweeper
 	Spool          *spool.Spool
+	SweepTimeout   time.Duration
 	mu             sync.Mutex
 	running, dirty bool
 }
@@ -68,7 +122,13 @@ func (w *Watcher) trigger(ctx context.Context) {
 	w.mu.Unlock()
 	go func() {
 		for {
-			_ = w.Sweeper.Sweep(ctx, SweepOptions{})
+			timeout := w.SweepTimeout
+			if timeout <= 0 {
+				timeout = 3 * time.Minute
+			}
+			sweepCtx, cancel := context.WithTimeout(ctx, timeout)
+			_ = w.Sweeper.Sweep(sweepCtx, SweepOptions{})
+			cancel()
 			w.mu.Lock()
 			if !w.dirty {
 				w.running = false

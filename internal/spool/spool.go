@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"github.com/CaliLuke/earwig/internal/normalizer"
 	_ "modernc.org/sqlite"
 	"os"
@@ -19,6 +20,17 @@ type Spool struct {
 type Row struct {
 	TraceUUID, Provider, SessionID, TurnID, Status, Payload, Hash string
 	StartedMS, CompletedMS, CapturedMS                            int64
+}
+
+// TurnPayload is the durable/exported unit. It deliberately excludes the
+// transcript's turns array and mutable session fields, so activity later in a
+// session cannot rewrite every turn already captured.
+type TurnPayload struct {
+	SchemaVersion int                `json:"schema_version"`
+	Source        string             `json:"source"`
+	Capture       normalizer.Capture `json:"capture"`
+	Session       map[string]any     `json:"session"`
+	Turn          normalizer.Turn    `json:"turn"`
 }
 
 func DefaultPath() string {
@@ -39,11 +51,80 @@ func Open(path string) (*Spool, error) {
 		db.Close()
 		return nil, e
 	}
+	if e = s.migrateLegacyPayloads(); e != nil {
+		db.Close()
+		return nil, e
+	}
 	if e = os.Chmod(path, 0600); e != nil {
 		db.Close()
 		return nil, e
 	}
 	return s, nil
+}
+
+// migrateLegacyPayloads rewrites rows created before per-turn envelopes were
+// introduced. It operates in small batches because the legacy representation
+// may contain a multi-megabyte transcript in every row.
+func (s *Spool) migrateLegacyPayloads() error {
+	type migration struct {
+		id, payload, hash string
+	}
+	var format string
+	if err := s.DB.QueryRow(`SELECT value_json FROM health WHERE key='payload_format'`).Scan(&format); err == nil && format == `"turn-v1"` {
+		return nil
+	} else if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	for {
+		rows, err := s.DB.Query(`SELECT trace_uuid,payload_json FROM turns WHERE payload_json LIKE '{"transcript":%' LIMIT 50`)
+		if err != nil {
+			return err
+		}
+		batch := []migration{}
+		for rows.Next() {
+			var id, legacyJSON string
+			if err = rows.Scan(&id, &legacyJSON); err != nil {
+				rows.Close()
+				return err
+			}
+			var legacy struct {
+				Transcript normalizer.Transcript `json:"transcript"`
+				Turn       normalizer.Turn       `json:"turn"`
+			}
+			if err = json.Unmarshal([]byte(legacyJSON), &legacy); err != nil {
+				rows.Close()
+				return err
+			}
+			payload := TurnPayload{SchemaVersion: legacy.Transcript.SchemaVersion, Source: legacy.Transcript.Source, Capture: legacy.Transcript.Capture, Session: sessionHeader(legacy.Transcript.Session), Turn: legacy.Turn}
+			b, marshalErr := json.Marshal(payload)
+			if marshalErr != nil {
+				rows.Close()
+				return marshalErr
+			}
+			batch = append(batch, migration{id: id, payload: string(b), hash: hash(b)})
+		}
+		if err = rows.Err(); err != nil {
+			rows.Close()
+			return err
+		}
+		rows.Close()
+		if len(batch) == 0 {
+			return s.SetHealth("payload_format", "turn-v1")
+		}
+		tx, err := s.DB.Begin()
+		if err != nil {
+			return err
+		}
+		for _, item := range batch {
+			if _, err = tx.Exec(`UPDATE turns SET payload_json=?,content_hash=? WHERE trace_uuid=?`, item.payload, item.hash, item.id); err != nil {
+				tx.Rollback()
+				return err
+			}
+		}
+		if err = tx.Commit(); err != nil {
+			return err
+		}
+	}
 }
 func (s *Spool) Close() error { return s.DB.Close() }
 func hash(b []byte) string    { x := sha256.Sum256(b); return hex.EncodeToString(x[:]) }
@@ -55,10 +136,13 @@ func (s *Spool) UpsertTranscript(t normalizer.Transcript, now time.Time) (int, e
 		if turn.Status != "completed" && turn.Status != "failed" {
 			continue
 		}
-		p := struct {
-			Transcript normalizer.Transcript `json:"transcript"`
-			Turn       normalizer.Turn       `json:"turn"`
-		}{t, turn}
+		p := TurnPayload{
+			SchemaVersion: t.SchemaVersion,
+			Source:        t.Source,
+			Capture:       t.Capture,
+			Session:       sessionHeader(t.Session),
+			Turn:          turn,
+		}
 		b, e := json.Marshal(p)
 		if e != nil {
 			return n, e
@@ -72,8 +156,51 @@ func (s *Spool) UpsertTranscript(t normalizer.Transcript, now time.Time) (int, e
 		x, _ := r.RowsAffected()
 		n += int(x)
 	}
-	_, e := s.DB.Exec(`INSERT INTO sessions(provider,session_id,cwd,summary,last_modified_ms,last_swept_ms,compaction_count) VALUES(?,?,?,?,?,?,?) ON CONFLICT(provider,session_id) DO UPDATE SET cwd=excluded.cwd,summary=excluded.summary,last_modified_ms=excluded.last_modified_ms,last_swept_ms=excluded.last_swept_ms,compaction_count=excluded.compaction_count`, t.Source, sid, t.Session["cwd"], t.Session["summary"], normalizerTimestamp(t.Session["last_modified"]), now.UnixMilli(), lenAny(t.Session["compactions"]))
+	_, e := s.DB.Exec(`INSERT INTO sessions(provider,session_id,cwd,summary,last_modified_ms,last_swept_ms,compaction_count) VALUES(?,?,?,?,?,?,?) ON CONFLICT(provider,session_id) DO UPDATE SET cwd=excluded.cwd,summary=excluded.summary,last_modified_ms=excluded.last_modified_ms,last_swept_ms=excluded.last_swept_ms,compaction_count=excluded.compaction_count`, t.Source, sid, t.Session["cwd"], sessionSummary(t.Session), sessionLastModified(t), now.UnixMilli(), lenAny(t.Session["compactions"]))
 	return n, e
+}
+
+func sessionHeader(session map[string]any) map[string]any {
+	header := map[string]any{}
+	for _, key := range []string{"id", "session_id", "cwd", "created_at", "forked_from_id", "parent_thread_id"} {
+		if value, ok := session[key]; ok {
+			header[key] = value
+		}
+	}
+	return header
+}
+
+func sessionSummary(session map[string]any) any {
+	if v, ok := session["summary"]; ok {
+		return v
+	}
+	return session["name"]
+}
+
+func sessionLastModified(t normalizer.Transcript) int64 {
+	if t.Source == "codex-app-server" {
+		return normalizerTimestamp(t.Session["updated_at"])
+	}
+	return normalizerTimestamp(t.Session["last_modified"])
+}
+
+// SessionNeedsSweep is the read planner. Unknown timestamps are read
+// conservatively; known sessions are read only after their provider-reported
+// mtime advances.
+func (s *Spool) SessionNeedsSweep(provider, sessionID string, lastModified any) (bool, error) {
+	candidate := normalizerTimestamp(lastModified)
+	if candidate <= 0 {
+		return true, nil
+	}
+	var stored int64
+	err := s.DB.QueryRow(`SELECT last_modified_ms FROM sessions WHERE provider=? AND session_id=?`, provider, sessionID).Scan(&stored)
+	if errors.Is(err, sql.ErrNoRows) {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return candidate > stored, nil
 }
 func normalizerTimestamp(v any) int64 {
 	switch x := v.(type) {

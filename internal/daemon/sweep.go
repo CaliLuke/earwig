@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"github.com/CaliLuke/earwig/internal/config"
 	"github.com/CaliLuke/earwig/internal/exporter"
@@ -25,9 +26,14 @@ func (s *Sweeper) Sweep(ctx context.Context, o SweepOptions) error {
 	s.note("last_sweep_started", now)
 	var first error
 	if s.Config.Claude && (o.Provider == "" || o.Provider == "claude") {
-		if e := s.claude(ctx, o, now); e != nil {
+		providerCtx, cancel := context.WithTimeout(ctx, provider.DefaultClaudeTimeout())
+		e := s.claude(providerCtx, o, now)
+		cancel()
+		if e != nil {
 			first = e
 			s.note("claude_error", e.Error())
+		} else {
+			s.note("claude_error", nil)
 		}
 	}
 	if s.Config.Codex && (o.Provider == "" || o.Provider == "codex") {
@@ -36,6 +42,8 @@ func (s *Sweeper) Sweep(ctx context.Context, o SweepOptions) error {
 				first = e
 			}
 			s.note("codex_error", e.Error())
+		} else {
+			s.note("codex_error", nil)
 		}
 	}
 	for _, e := range s.exporters() {
@@ -48,7 +56,13 @@ func (s *Sweeper) Sweep(ctx context.Context, o SweepOptions) error {
 			s.note("exporter_"+e.Name()+"_behind", nil)
 		}
 	}
-	s.note("last_sweep_success", time.Now())
+	s.note("last_sweep_completed", time.Now())
+	if first == nil {
+		s.note("last_sweep_success", time.Now())
+		s.note("last_sweep_error", nil)
+	} else {
+		s.note("last_sweep_error", first.Error())
+	}
 	return first
 }
 func (s *Sweeper) exporters() []exporter.Exporter {
@@ -63,6 +77,7 @@ func (s *Sweeper) exporters() []exporter.Exporter {
 }
 func (s *Sweeper) claude(ctx context.Context, o SweepOptions, now time.Time) error {
 	r := provider.ClaudeReader{Helper: s.Config.ClaudeHelper}
+	var readErrors []error
 	for _, root := range s.Config.WorkspaceRoots {
 		list, e := r.List(ctx, root)
 		if e != nil {
@@ -75,8 +90,18 @@ func (s *Sweeper) claude(ctx context.Context, o SweepOptions, now time.Time) err
 			if !config.Allowed(s.Config, v.CWD) {
 				continue
 			}
+			if o.Session == "" {
+				changed, planErr := s.Spool.SessionNeedsSweep("claude-code-agent-sdk", v.ID, v.LastModified)
+				if planErr != nil {
+					return planErr
+				}
+				if !changed {
+					continue
+				}
+			}
 			info, msg, e := r.Read(ctx, v.ID, v.CWD)
 			if e != nil {
+				readErrors = append(readErrors, fmt.Errorf("read Claude session %s: %w", v.ID, e))
 				continue
 			}
 			t, e := normalizer.NormalizeClaude(info, msg)
@@ -92,9 +117,10 @@ func (s *Sweeper) claude(ctx context.Context, o SweepOptions, now time.Time) err
 			}
 		}
 	}
-	return nil
+	return errors.Join(readErrors...)
 }
 func (s *Sweeper) codex(ctx context.Context, o SweepOptions, now time.Time) error {
+	var readErrors []error
 	for _, root := range s.Config.WorkspaceRoots {
 		c, e := provider.StartCodex(ctx, root)
 		if e != nil {
@@ -114,8 +140,23 @@ func (s *Sweeper) codex(ctx context.Context, o SweepOptions, now time.Time) erro
 			if !config.Allowed(s.Config, cwd) {
 				continue
 			}
+			if o.Session == "" {
+				modified := item["updatedAt"]
+				if modified == nil {
+					modified = item["updated_at"]
+				}
+				changed, planErr := s.Spool.SessionNeedsSweep("codex-app-server", id, modified)
+				if planErr != nil {
+					c.Close()
+					return planErr
+				}
+				if !changed {
+					continue
+				}
+			}
 			thread, e := c.Read(ctx, id)
 			if e != nil {
+				readErrors = append(readErrors, fmt.Errorf("read Codex session %s: %w", id, e))
 				continue
 			}
 			t, e := normalizer.NormalizeCodex(thread)
@@ -129,7 +170,7 @@ func (s *Sweeper) codex(ctx context.Context, o SweepOptions, now time.Time) erro
 		}
 		c.Close()
 	}
-	return nil
+	return errors.Join(readErrors...)
 }
 
 // gap is intentionally the one documented predicate, without heuristic inference.

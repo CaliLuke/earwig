@@ -174,8 +174,11 @@ convenience. The trigger stack exists for Claude.
 `earwig hooks install` prints the exact settings JSON, asks for
 confirmation, then writes `PreCompact`, `Stop`, and `SessionEnd` entries to
 the user's Claude Code settings; `hooks remove` deletes exactly those
-entries. Hook commands invoke `earwig sweep --session <id>` with argv
-only and always exit 0 so a broken daemon can never block the user's session.
+entries. Hook commands invoke the managed `earwig hook claude` entrypoint,
+which reads the documented hook JSON from stdin, validates `session_id`, and
+runs a targeted sweep in-process. Session IDs are never shell-expanded or
+interpolated into commands, and the hook entrypoint always exits 0 so a broken
+capture path can never block the user's session.
 The default (no hooks) still works through fs events and polling.
 
 Spool
@@ -195,6 +198,11 @@ exports(trace_uuid, exporter, exported_at_ms, content_hash,
         PRIMARY KEY (trace_uuid, exporter));
 health(key PRIMARY KEY, value_json);
 ```
+
+Each `payload_json` is a per-turn envelope (`schema_version`, `source`,
+`capture`, a stable slim session header, and one `turn`), never a copy of the
+whole transcript. Opening an older spool migrates legacy whole-transcript rows
+in bounded batches.
 
 Exporters re-export rows whose stored hash differs from the export record.
 The spool retains everything until `earwig prune --older-than <dur>`
@@ -229,7 +237,8 @@ Commands and process model
 - `earwig sweep [--session <id>] [--provider codex|claude]` — one
   sweep; also what hooks call; works with the daemon stopped.
 - `earwig watch` — foreground daemon; single instance via exclusive
-  lock next to the spool (second invocation exits 2 with holder PID).
+  OS advisory lock next to the spool (second invocation exits 2 with holder
+  PID; lock ownership is released automatically if the process dies).
 - `earwig install` / `uninstall` — launchd agent (`KeepAlive`,
   `RunAtLoad`) after printing the plist and confirming. Linux/systemd is a
   later stage.

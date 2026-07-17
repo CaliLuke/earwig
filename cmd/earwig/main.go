@@ -23,6 +23,12 @@ func main() {
 		usage()
 		return
 	}
+	// Claude invokes this entrypoint from managed hooks. It must always return
+	// zero so capture failures can never block or alter an agent session.
+	if os.Args[1] == "hook" {
+		runHook(os.Args[2:])
+		return
+	}
 	cfg, e := config.Load()
 	if e != nil {
 		fatal(e)
@@ -56,7 +62,7 @@ func main() {
 	case "watch":
 		lock, e := daemon.Acquire(spool.DefaultPath() + ".lock")
 		if e != nil {
-			fmt.Fprintln(os.Stderr, "earwig: daemon already running")
+			fmt.Fprintln(os.Stderr, "earwig:", e)
 			os.Exit(2)
 		}
 		defer lock.Release()
@@ -71,12 +77,12 @@ func main() {
 			fatal(e)
 		}
 		behind := false
-		if b, err := os.ReadFile(spool.DefaultPath() + ".lock"); err == nil {
-			fmt.Printf("daemon: running (pid %s)\n", strings.TrimSpace(string(b)))
+		if pid, running, err := daemon.LockStatus(spool.DefaultPath() + ".lock"); err == nil && running {
+			fmt.Printf("daemon: running (pid %d)\n", pid)
 		} else {
 			fmt.Println("daemon: stopped")
 		}
-		for _, key := range []string{"last_poll", "last_sweep_started", "last_sweep_success"} {
+		for _, key := range []string{"last_poll", "last_sweep_started", "last_sweep_completed", "last_sweep_success", "last_sweep_error"} {
 			if v, err := s.GetHealth(key); err == nil {
 				fmt.Printf("%s: %s\n", key, v)
 			}
@@ -164,6 +170,39 @@ func main() {
 		usage()
 	}
 }
+
+func runHook(args []string) {
+	if len(args) != 2 || args[0] != "claude" || args[1] != hooks.ManagedArgument {
+		fmt.Fprintln(os.Stderr, "earwig: invalid managed hook invocation")
+		return
+	}
+	sessionID, err := hooks.SessionID(os.Stdin)
+	if err != nil || !provider.ValidClaudeID(sessionID) {
+		if err == nil {
+			err = fmt.Errorf("invalid Claude session ID")
+		}
+		fmt.Fprintln(os.Stderr, "earwig:", err)
+		return
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "earwig:", err)
+		return
+	}
+	s, err := spool.Open(spool.DefaultPath())
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "earwig:", err)
+		return
+	}
+	defer s.Close()
+	sw := &daemon.Sweeper{Config: cfg, Spool: s, Log: log.New(os.Stderr, "earwig: ", log.LstdFlags)}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	if err = sw.Sweep(ctx, daemon.SweepOptions{Session: sessionID, Provider: "claude"}); err != nil {
+		fmt.Fprintln(os.Stderr, "earwig:", err)
+	}
+}
+
 func hooksCmd(args []string) {
 	if len(args) != 1 {
 		fatal(fmt.Errorf("hooks install|remove"))

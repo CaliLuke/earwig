@@ -27,7 +27,11 @@ func (r ClaudeReader) command(ctx context.Context, args ...string) ([]byte, erro
 	} else {
 		c = exec.CommandContext(ctx, r.Helper, args...)
 	}
-	return c.Output()
+	b, err := c.Output()
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+	return b, err
 }
 func (r ClaudeReader) List(ctx context.Context, dir string) ([]ClaudeSession, error) {
 	b, e := r.command(ctx, "list", "--dir", dir)
