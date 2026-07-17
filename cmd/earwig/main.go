@@ -42,6 +42,9 @@ func main() {
 		if *p != "" && *p != "claude" && *p != "codex" {
 			fatal(fmt.Errorf("provider must be claude or codex"))
 		}
+		if *session != "" && *p == "" {
+			fatal(fmt.Errorf("--session requires --provider"))
+		}
 		if *session != "" && ((*p == "claude" && !provider.ValidClaudeID(*session)) || (*p == "codex" && !provider.ValidCodexID(*session))) {
 			fatal(fmt.Errorf("invalid session ID"))
 		}

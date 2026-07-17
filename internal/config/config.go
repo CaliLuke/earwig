@@ -20,7 +20,7 @@ type Config struct {
 
 func Default() Config {
 	h, _ := os.UserHomeDir()
-	return Config{WorkspaceRoots: []string{h}, Claude: true, Codex: true, JSONDir: filepath.Join(h, ".local", "share", "earwig", "json"), ClaudeHelper: "", ActivePollSeconds: 15, IdlePollSeconds: 300}
+	return Config{WorkspaceRoots: []string{h}, Claude: true, Codex: true, JSONDir: filepath.Join(h, ".local", "share", "earwig", "json"), ClaudeHelper: "helpers/claude-reader/index.mjs", ActivePollSeconds: 15, IdlePollSeconds: 300}
 }
 func Path() string {
 	if p := os.Getenv("EARWIG_CONFIG"); p != "" {

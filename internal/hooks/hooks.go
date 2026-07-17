@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 )
 
 func SettingsPath() string {
@@ -15,7 +16,7 @@ func SettingsPath() string {
 }
 func BackupPath() string { return SettingsPath() + ".earwig-backup" }
 func Desired(binary string) map[string]any {
-	command := binary + " sweep --provider claude --session \"$CLAUDE_SESSION_ID\""
+	command := strconv.Quote(binary) + " sweep --provider claude --session \"$CLAUDE_SESSION_ID\""
 	return map[string]any{"hooks": map[string]any{"PreCompact": []any{map[string]any{"hooks": []any{map[string]any{"type": "command", "command": command}}}}, "Stop": []any{map[string]any{"hooks": []any{map[string]any{"type": "command", "command": command}}}}, "SessionEnd": []any{map[string]any{"hooks": []any{map[string]any{"type": "command", "command": command}}}}}}
 }
 func Preview(binary string) (string, error) {
