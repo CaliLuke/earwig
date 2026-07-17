@@ -1,0 +1,350 @@
+earwig — a bug that listens to your agents
+==========================================
+
+A local, always-on daemon that captures completed Codex and Claude Code
+turns as they happen, spools them durably, and exports them to evaluation
+backends (Opik first). Personal tool first; staged toward a brew-distributable
+binary other people can install and get value from with zero configuration.
+
+The name: an earwig is literally a bug, and "earwigging" is slang for
+eavesdropping. This is a small bug planted next to your agents, quietly
+getting the conversations on tape.
+
+Status: approved design, not yet implemented.
+
+Context and motivation
+----------------------
+
+Agent sessions are the best evaluation data their operators have, and they
+evaporate. Claude Code's supported history surface returns only the
+post-compaction conversation chain, and MCP-heavy workflows returning 20–50k
+tokens per tool call can walk through a context window in a handful of turns —
+a completed turn can become unrecoverable minutes after it finishes. Codex
+retains full history but still requires remembering to export. Human
+checkpoint discipline fails exactly when the work is most interesting.
+
+The upstream consumer (the Auto-K eval pipeline,
+`autok-server/tech_docs/0005`) already normalizes both providers into one
+canonical transcript contract with deterministic, idempotent IDs, imported
+manually. This project moves capture out of human hands and out of that repo:
+a standalone service with no Auto-K dependencies in its core.
+
+### Goals
+
+- No completed or failed turn from a watched workspace is lost to compaction
+  while the daemon runs.
+- Zero operator attention during work; curation happens afterwards, in the
+  eval backend.
+- Capture never depends on any exporter being up.
+- Everything is local and non-billable: no model calls, no network egress
+  except loopback exporters.
+- Idle daemon footprint suitable for "always on": resident set under ~30 MB.
+- Distributable later: single `brew install`, `earwig install`, done.
+
+### Non-goals
+
+- Recovering turns that complete *and* compact entirely while the daemon is
+  down. Impossible through supported surfaces; detected and reported instead.
+- Parsing `~/.claude/projects/**/*.jsonl` or `$CODEX_HOME/sessions` content.
+  File events and mtimes are trigger signals; file content is never read.
+- Capturing in-flight or user-interrupted turns.
+- Cloud sync, multi-user service, telemetry, or any non-loopback egress.
+- Being an eval platform. Review, annotation, datasets, and experiments live
+  in the backend (Opik); this tool captures and exports.
+
+Language and process architecture
+---------------------------------
+
+The daemon is **Go** (single static binary, low idle memory, trivial launchd
+lifecycle). One supported interface is unreachable from Go: Claude session
+history is only readable without unstable-format parsing through the
+TypeScript Agent SDK (`listSessions` / `getSessionInfo` / `getSessionMessages`
+from `@anthropic-ai/claude-agent-sdk`; Anthropic documents these as the way to
+build transcript tooling and explicitly warns the on-disk JSONL format changes
+between releases).
+
+Resolution — split resident from transient:
+
+```text
+earwig (Go, resident)                    helpers (transient, per sweep)
+─────────────────────────────                  ─────────────────────────────
+fs watchers (fsnotify, paths only)
+poll timers, debounce, serialization
+spool (SQLite via modernc.org/sqlite, no CGo)
+exporters (Opik loopback HTTP, JSON dir)
+health/state, gap detection            ──┬──▶  claude-reader: Node + pinned
+codex app-server JSON-RPC client         │     Agent SDK; list/read commands;
+  (spawned subprocess, stdio)            │     JSON on stdout; exits when done
+                                         └──▶  codex app-server subprocess
+                                               (spawned for the sweep, stdio)
+```
+
+- The Go daemon idles with watchers and timers only. Helpers exist solely
+  during a sweep, so background memory stays at the Go baseline.
+- `claude-reader` is a small Node CLI with the pinned SDK: `list --dir <d>`
+  and `read <session-id> --dir <d>`, emitting raw `SDKSessionInfo` /
+  `SessionMessage[]` JSON. Normalization lives in Go so there is exactly one
+  canonical-transcript implementation. The reference for what the helper
+  reads and what normalization must produce is
+  `autok-server/evals/providers/claude-transcript{,-cli}.mjs`.
+- Codex needs no helper: app-server speaks JSON-RPC over stdio
+  (`initialize`, `thread/list`, `thread/read`), which Go handles natively.
+  Reference: `autok-server/evals/providers/codex-thread.mjs`.
+- Distribution: the brew formula ships the Go binary plus the helper as a
+  `bun compile` single-file binary (no Node runtime dependency for users).
+  During development the helper runs via `node`.
+- Rejected alternative: parsing Claude JSONL directly in Go. It would remove
+  the helper but re-adopt the unstable-format dependency this design exists
+  to avoid. Revisit only if Anthropic documents the transcript format.
+
+Canonical transcript contract
+-----------------------------
+
+Go re-implements, with cross-language fixture tests, the existing contract:
+
+- **Normalized transcript** `{schema_version: 1, source, capture, session,
+  turns[]}` with turns
+  `{id, status, started_at, completed_at, duration_ms, user_messages[],
+  assistant_messages[] (kind: text|thinking), final_answer, trajectory[],
+  following_user_messages[], error}` — same shapes the Auto-K importers emit
+  (`autok-server/evals/providers/transcript-common.mjs` is normative).
+- **Turn status:** `completed` (`end_turn`/`stop_sequence`), `failed`
+  (`refusal`/`max_tokens`/`model_context_window_exceeded`), `interrupted`,
+  `in_flight`. Only completed/failed are spooled.
+- **Deterministic trace IDs:** UUIDv7 — 48-bit turn-start ms, version/variant
+  bits, 74 bits of SHA-256 over `provider \x1f session_id \x1f turn_id`
+  (normative reference: `_deterministic_uuid7` in
+  `autok-server/evals/opik/src/autok_evals/cli.py`, including the UTC rule
+  for naive timestamps). Same inputs on any machine produce the same ID;
+  re-capture and re-export are idempotent by construction.
+- **Capture policy:** full fidelity (thinking, tool arguments/results,
+  file contents) with secret-pattern redaction inside command text and binary
+  payloads replaced by placeholders; policy is stamped into every transcript
+  as `capture` metadata. Configurable; the public-release default flips to
+  conservative (see Staging).
+- **Compaction markers:** the Claude summary-continuation message (stable
+  lead sentence) is recorded as a compaction boundary, never as a turn.
+  Synthetic user inputs (command echoes, task notifications, interrupt
+  markers) are flagged and excluded from redirect evidence.
+
+Fixture parity: a shared JSON fixture set (raw provider payload → expected
+normalized transcript, including trace UUIDs) is checked into this repo and
+must produce byte-identical normalized output to the autok-server Node
+normalizers at adoption time. This is the guard against divergence while both
+implementations exist.
+
+High-level behavior
+-------------------
+
+A **sweep** is the only unit of work; every trigger funnels into it:
+
+1. List sessions per provider; keep those whose recorded cwd matches a
+   watched workspace root and whose `last_modified` exceeds the spool's
+   record.
+2. Read changed sessions through the supported interfaces (helper /
+   app-server), normalize, and upsert completed/failed turns into the spool
+   keyed by trace UUID. Content hash decides whether an existing row is
+   rewritten.
+3. Record compaction markers; evaluate the gap predicate.
+4. Drain unexported/stale-hash rows to enabled exporters.
+5. Update checkpoint state and health.
+
+Sweeps are serialized; a trigger during a sweep marks it dirty and exactly one
+follow-up sweep runs. Every step is idempotent, so overlapping trigger causes
+are harmless. State is a cache: deleting the spool costs one catch-up sweep
+and zero duplicates downstream (deterministic IDs).
+
+### Triggers, tightest guarantee first
+
+| Trigger | Latency | Role |
+| --- | --- | --- |
+| Claude `PreCompact` hook (opt-in) | before compaction | closes the compaction race deterministically |
+| Claude `Stop`/`SessionEnd` hooks (opt-in) | seconds | prompt per-turn capture |
+| fsnotify on `~/.claude/projects/` and `$CODEX_HOME/sessions` (paths/mtime only, 2 s debounce) | seconds | default event source |
+| active poll: 15 s while any watched session changed in the last 10 min | ≤15 s | net for dropped/coalesced fs events |
+| idle poll: 5 min | ≤5 min | staleness bound |
+| startup catch-up sweep | at start/wake | downtime recovery |
+
+Codex has no compaction-loss window (`thread/read` returns full history;
+verify empirically in stage A and record the result); its freshness is
+convenience. The trigger stack exists for Claude.
+
+### Hooks are opt-in, tool-managed
+
+`earwig hooks install` prints the exact settings JSON, asks for
+confirmation, then writes `PreCompact`, `Stop`, and `SessionEnd` entries to
+the user's Claude Code settings; `hooks remove` deletes exactly those
+entries. Hook commands invoke `earwig sweep --session <id>` with argv
+only and always exit 0 so a broken daemon can never block the user's session.
+The default (no hooks) still works through fs events and polling.
+
+Spool
+-----
+
+SQLite (`modernc.org/sqlite`, pure Go) at
+`~/.local/share/earwig/spool.sqlite`, mode `0600`:
+
+```sql
+sessions(provider, session_id, cwd, summary, last_modified_ms,
+         last_swept_ms, compaction_count, gap_warned,
+         PRIMARY KEY (provider, session_id));
+turns(trace_uuid PRIMARY KEY, provider, session_id, turn_id, turn_status,
+      started_at_ms, completed_at_ms, payload_json, content_hash,
+      captured_at_ms);
+exports(trace_uuid, exporter, exported_at_ms, content_hash,
+        PRIMARY KEY (trace_uuid, exporter));
+health(key PRIMARY KEY, value_json);
+```
+
+Exporters re-export rows whose stored hash differs from the export record.
+The spool retains everything until `earwig prune --older-than <dur>`
+(never prunes rows an exporter has marked kept/promoted upstream).
+
+Exporters
+---------
+
+An exporter is a Go interface: `Export(batch []Turn) error` plus a health
+check; failures mark the exporter `behind` and the sweep continues. Built-in:
+
+- **opik** — loopback-only URL guard; creates/updates traces by deterministic
+  ID and threads by session ID; tags `auto-checkpoint`, `inbox`, provider,
+  and status. It never adds anything to annotation queues — curation
+  (promote/discard) is the consumer's job (for Auto-K, tooling in
+  autok-server's `agent-eval`; for others, the Opik UI).
+- **jsondir** — writes normalized transcripts under a directory tree; the
+  zero-infrastructure default for new users.
+
+Compaction gap detection
+------------------------
+
+One predicate, per Claude session per sweep: a compaction marker with
+timestamp later than the session's `last_swept_ms` ⇒ turns may have completed
+and been compacted inside a blind window. Set `gap_warned`, emit one
+conspicuous warning (session, compaction time, window) in the log and
+`status`. No fuzzier heuristics.
+
+Commands and process model
+--------------------------
+
+- `earwig sweep [--session <id>] [--provider codex|claude]` — one
+  sweep; also what hooks call; works with the daemon stopped.
+- `earwig watch` — foreground daemon; single instance via exclusive
+  lock next to the spool (second invocation exits 2 with holder PID).
+- `earwig install` / `uninstall` — launchd agent (`KeepAlive`,
+  `RunAtLoad`) after printing the plist and confirming. Linux/systemd is a
+  later stage.
+- `earwig status` — running state, last poll, last successful sweep,
+  sessions tracked, turns captured (total / 24 h), exporter lag, compactions
+  observed, gap warnings. Exit 1 when behind or gapped.
+- `earwig stop`, `earwig prune`, `earwig export --dir …`.
+- Config: `~/.config/earwig/config.toml` — workspace roots (default:
+  the user's home-scoped provider dirs, i.e. all projects), enabled
+  providers/exporters, cadences, capture policy, helper path. Every setting
+  has a working default; a missing config file is not an error.
+
+Session IDs are validated (`^[0-9a-fA-F-]{36}$` UUID shape for Claude;
+`[A-Za-z0-9_-]{8,128}` for Codex thread IDs) and passed as argv everywhere —
+no shell interpolation of IDs or paths.
+
+Error handling
+--------------
+
+- **Exporter down:** capture continues; row stays unexported; `status` says
+  `behind`; next healthy sweep drains. The daemon never starts Docker/Colima
+  or any backend.
+- **Provider read failure:** skip the session this sweep; after 3 consecutive
+  failures for the same session, surface it in `status` instead of hot
+  retrying.
+- **Contract drift** (helper/SDK or app-server schema surprise): fail loud,
+  stop sweeping that provider, report in `status`. Never fall back to raw
+  session-file parsing.
+- **Spool corruption:** move the file aside; startup catch-up rebuilds from
+  what providers still expose; deterministic IDs make re-export a no-op.
+- **Helper missing/incompatible:** refuse Claude sweeps with a clear message
+  naming the expected helper version; Codex sweeps continue.
+
+Staging
+-------
+
+- **Stage A — capture core (this is the build target):** normalizers +
+  fixture parity, spool, `sweep`, `jsondir` and `opik` exporters, config,
+  session-ID guards. Immediately useful run-by-hand.
+- **Stage B — daemon:** `watch`, lock, fsnotify triggers, polls, startup
+  catch-up, `status`/`stop`, launchd `install`, gap predicate.
+- **Stage C — hooks:** `hooks install/remove`, `PreCompact`-driven sweeps.
+- **Stage D — distribution:** bun-compiled helper, brew formula, Linux
+  support, and the public-default flip: secret redaction on, capture policy
+  conservative, first-run consent describing exactly what is captured and
+  where it goes. Not started until A–C have weeks of real personal use.
+
+Auto-K integration (outside this repo): autok-server's `agent-eval` gains
+promote/discard/queue tooling over the `inbox` tag and retires its manual
+import path in favor of this service once stage B is trusted. Its
+`tech_docs/0005` records that decision when it happens.
+
+Testing approach
+----------------
+
+- **Go unit:** normalizer golden tests against the shared fixtures
+  (including trace-UUID equality with the reference implementation), sweep
+  planner selection logic, spool upsert/rehash, gap predicate truth table,
+  debounce/serialization, lock contention, UUIDv7 bit layout.
+- **Helper unit (Node):** list/read JSON contract against recorded SDK
+  payloads.
+- **Integration (local, non-billable):** sweep real on-disk Claude sessions
+  and a live `codex app-server`; kill -9 mid-sweep and verify convergence;
+  concurrent `watch` rejection; Opik drain including stopped-backend backlog;
+  spool-delete rebuild producing zero duplicate traces.
+- **Manual:** one MCP-heavy Claude session driven to compaction with the
+  daemon running (zero lost completed turns) and one across a stopped window
+  (exactly one gap warning naming the session).
+
+Acceptance criteria
+-------------------
+
+Stage A:
+
+- Given the shared fixtures, Go normalization output is byte-identical to
+  the reference output, including trace UUIDs.
+- `sweep` twice back-to-back: second run performs zero exporter writes;
+  exactly one Opik trace exists per completed turn.
+- With Opik stopped, `sweep` captures to the spool, exits 0, reports
+  `behind`; a later sweep drains without duplicates.
+- A session whose cwd is outside every configured workspace root is never
+  read.
+
+Stage B:
+
+- Daemon running, active Claude session, no hooks: a completed turn is in
+  the spool within 30 s of `end_turn`.
+- Delete spool + state, restart: everything still provider-visible is
+  re-captured; Opik trace count is unchanged.
+- Compaction during downtime ⇒ exactly one gap warning on next start;
+  compaction after a successful sweep of that session ⇒ none.
+- Second `watch` exits 2 without sweeping. Idle daemon RSS < 30 MB.
+
+Stage C:
+
+- With hooks installed, `PreCompact` triggers a sweep that completes before
+  compaction proceeds; a session compacted immediately after a completed
+  turn loses nothing.
+- `hooks remove` restores settings byte-for-byte apart from the removed
+  entries.
+
+Open questions
+--------------
+
+1. Opik REST batch-deletion support for `prune` (shape of implementation
+   only).
+2. Whether Codex `notify` provides a usable turn-completion trigger worth
+   wiring, or fs events + polling suffice (default assumption).
+3. Empirical confirmation that Codex `thread/read` retains pre-compaction
+   turns (stage A spot-check; update this doc with the result). **2026-07-17:
+   the app-server protocol was exercised against the local earwig workspace,
+   but its list contained no completed thread to read, so retention across
+   compaction remains unconfirmed rather than assumed.**
+4. Whether `getSessionMessages` pagination (`limit`/`offset`) is needed for
+   very large sessions or whole-session reads stay fast enough (measure in
+   stage A). **2026-07-17: a 367-message real Claude session read in 130 ms
+   through SDK 0.3.212 without pagination. This is encouraging only; retain
+   the open question for very large/MCP-heavy sessions.**

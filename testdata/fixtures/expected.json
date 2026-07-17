@@ -1,0 +1,17 @@
+{
+  "claude": {
+    "trace_ids": ["019f6a5e-6900-7a22-a248-8f321fc8fb99", "019f6a63-e740-7c9b-bfce-47f842294cf8"],
+    "turns": [
+      {"id":"u1","status":"completed","started_at":"2026-07-16T10:00:00.000Z","completed_at":"2026-07-16T10:00:03.000Z","duration_ms":3000,"final":"Done.","command":"API_TOKEN=[REDACTED] echo ok","following":"Next"},
+      {"id":"u3","status":"failed","started_at":"2026-07-16T10:06:00.000Z","completed_at":"2026-07-16T10:06:01.000Z","duration_ms":1000,"final":"Partial."}
+    ],
+    "compactions": [{"id":"c1","timestamp":"2026-07-16T10:05:00.000Z"}]
+  },
+  "codex": {
+    "trace_ids": ["019f6d3a-d500-78e3-8deb-fb5d6ae8aca1", "019f6d3a-d8e8-7cfa-a6e7-8adcd325de3f"],
+    "turns": [
+      {"id":"turn_fixture_0001","status":"completed","final":"Done","command":"API_TOKEN=[REDACTED] echo ok","following":"Next"},
+      {"id":"turn_fixture_0002","status":"failed","error":"failed"}
+    ]
+  }
+}

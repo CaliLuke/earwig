@@ -1,0 +1,13 @@
+{
+  "provider": "claude",
+  "info": {"sessionId":"0aaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee","summary":"Fixture","cwd":"/tmp/earwig","gitBranch":"main","createdAt":1784244889661,"lastModified":1784245288737},
+  "messages": [
+    {"type":"user","uuid":"u1","timestamp":"2026-07-16T10:00:00.000Z","message":{"content":"Build it"}},
+    {"type":"assistant","uuid":"a1","timestamp":"2026-07-16T10:00:01.000Z","message":{"id":"api-a1","model":"claude-fable-5","stop_reason":"tool_use","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"API_TOKEN=hunter2 echo ok"}}]}},
+    {"type":"user","uuid":"u2","timestamp":"2026-07-16T10:00:02.000Z","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}},
+    {"type":"assistant","uuid":"a2","timestamp":"2026-07-16T10:00:03.000Z","message":{"id":"api-a2","model":"claude-fable-5","stop_reason":"end_turn","content":[{"type":"text","text":"Done."}]}},
+    {"type":"user","uuid":"c1","timestamp":"2026-07-16T10:05:00.000Z","message":{"content":"This session is being continued from a previous conversation. Summary."}},
+    {"type":"user","uuid":"u3","timestamp":"2026-07-16T10:06:00.000Z","message":{"content":"Next"}},
+    {"type":"assistant","uuid":"a3","timestamp":"2026-07-16T10:06:01.000Z","message":{"id":"api-a3","model":"claude-fable-5","stop_reason":"max_tokens","content":[{"type":"text","text":"Partial."}]}}
+  ]
+}
