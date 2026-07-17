@@ -94,6 +94,17 @@ func Watch(ctx context.Context, w *Watcher, paths []string) error {
 		})
 	}
 	w.trigger(ctx)
+	activeEvery := time.Duration(w.Sweeper.Config.ActivePollSeconds) * time.Second
+	if activeEvery <= 0 {
+		activeEvery = 15 * time.Second
+	}
+	idleEvery := time.Duration(w.Sweeper.Config.IdlePollSeconds) * time.Second
+	if idleEvery <= 0 {
+		idleEvery = 5 * time.Minute
+	}
+	poll := time.NewTicker(activeEvery)
+	defer poll.Stop()
+	lastChange, lastIdlePoll := time.Now(), time.Now()
 	debounce := time.NewTimer(time.Hour)
 	if !debounce.Stop() {
 		<-debounce.C
@@ -108,10 +119,18 @@ func Watch(ctx context.Context, w *Watcher, paths []string) error {
 			}
 		case ev := <-f.Events:
 			if ev.Name != "" {
+				lastChange = time.Now()
 				debounce.Reset(2 * time.Second)
 			}
 		case <-debounce.C:
 			w.trigger(ctx)
+		case now := <-poll.C:
+			if now.Sub(lastChange) <= 10*time.Minute || now.Sub(lastIdlePoll) >= idleEvery {
+				w.trigger(ctx)
+				if now.Sub(lastChange) > 10*time.Minute {
+					lastIdlePoll = now
+				}
+			}
 		}
 	}
 }
