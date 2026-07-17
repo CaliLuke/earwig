@@ -1,6 +1,8 @@
 package daemon
 
 import (
+	"bytes"
+	"encoding/xml"
 	"fmt"
 	"os"
 	"os/exec"
@@ -9,10 +11,22 @@ import (
 )
 
 func Plist(binary string) string {
+	binary = filepath.Clean(binary)
+	workingDirectory := filepath.Dir(binary)
+	path := os.Getenv("PATH")
+	if path == "" {
+		path = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+	}
 	return fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict><key>Label</key><string>com.caliluke.earwig</string><key>ProgramArguments</key><array><string>%s</string><string>watch</string></array><key>RunAtLoad</key><true/><key>KeepAlive</key><true/></dict></plist>
-`, binary)
+<plist version="1.0"><dict><key>Label</key><string>com.caliluke.earwig</string><key>ProgramArguments</key><array><string>%s</string><string>watch</string></array><key>WorkingDirectory</key><string>%s</string><key>EnvironmentVariables</key><dict><key>PATH</key><string>%s</string></dict><key>RunAtLoad</key><true/><key>KeepAlive</key><true/></dict></plist>
+`, xmlText(binary), xmlText(workingDirectory), xmlText(path))
+}
+
+func xmlText(value string) string {
+	var out bytes.Buffer
+	_ = xml.EscapeText(&out, []byte(value))
+	return out.String()
 }
 func PlistPath() string {
 	h, _ := os.UserHomeDir()

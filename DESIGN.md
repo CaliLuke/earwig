@@ -92,7 +92,9 @@ codex app-server JSON-RPC client         │     Agent SDK; list/read commands;
   Reference: `autok-server/evals/providers/codex-thread.mjs`.
 - Distribution: the brew formula ships the Go binary plus the helper as a
   `bun compile` single-file binary (no Node runtime dependency for users).
-  During development the helper runs via `node`.
+  During development the helper runs via `node`. The default helper path is
+  resolved absolutely from the Earwig executable (including Homebrew
+  `libexec` layouts), so daemon behavior never depends on its launch cwd.
 - Rejected alternative: parsing Claude JSONL directly in Go. It would remove
   the helper but re-adopt the unstable-format dependency this design exists
   to avoid. Revisit only if Anthropic documents the transcript format.
@@ -111,12 +113,15 @@ Go re-implements, with cross-language fixture tests, the existing contract:
 - **Turn status:** `completed` (`end_turn`/`stop_sequence`), `failed`
   (`refusal`/`max_tokens`/`model_context_window_exceeded`), `interrupted`,
   `in_flight`. Only completed/failed are spooled.
-- **Deterministic trace IDs:** UUIDv7 — 48-bit turn-start ms, version/variant
-  bits, 74 bits of SHA-256 over `provider \x1f session_id \x1f turn_id`
-  (normative reference: `_deterministic_uuid7` in
-  `autok-server/evals/opik/src/autok_evals/cli.py`, including the UTC rule
-  for naive timestamps). Same inputs on any machine produce the same ID;
-  re-capture and re-export are idempotent by construction.
+- **Trace IDs:** Claude uses deterministic UUIDv7 — 48-bit turn-start ms,
+  version/variant bits, and 74 bits of SHA-256 over
+  `provider \x1f session_id \x1f turn_id` (normative reference:
+  `_deterministic_uuid7` in Auto-K, including its UTC rule for naive
+  timestamps). Codex uses the native turn UUIDv7, matching Auto-K's importer;
+  synthetic/non-UUIDv7 fixture IDs fall back to the deterministic scheme.
+  This deliberate split preserves identity continuity with Auto-K for both
+  providers. Opening an older spool migrates hashed Codex rows to native IDs
+  and requeues them once under the compatible identity.
 - **Capture policy:** full fidelity (thinking, tool arguments/results,
   file contents) with secret-pattern redaction inside command text and binary
   payloads replaced by placeholders; policy is stamped into every transcript
@@ -204,9 +209,15 @@ Each `payload_json` is a per-turn envelope (`schema_version`, `source`,
 whole transcript. Opening an older spool migrates legacy whole-transcript rows
 in bounded batches.
 
+Each process uses one SQLite connection in WAL mode with a 5-second
+`busy_timeout`. A hook sweep racing the daemon therefore waits for the active
+writer instead of losing the PreCompact checkpoint to `database is locked`.
+
 Exporters re-export rows whose stored hash differs from the export record.
-The spool retains everything until `earwig prune --older-than <dur>`
-(never prunes rows an exporter has marked kept/promoted upstream).
+The spool retains everything until `earwig prune --older-than <dur>`. Before
+deleting Opik-exported rows, prune reads their current upstream tags and keeps
+traces tagged `kept` or `promoted`; an unavailable/misconfigured Opik aborts
+the prune rather than guessing.
 
 Exporters
 ---------
@@ -214,9 +225,14 @@ Exporters
 An exporter is a Go interface: `Export(batch []Turn) error` plus a health
 check; failures mark the exporter `behind` and the sweep continues. Built-in:
 
-- **opik** — loopback-only URL guard; creates/updates traces by deterministic
-  ID and threads by session ID; tags `auto-checkpoint`, `inbox`, provider,
-  and status. It never adds anything to annotation queues — curation
+- **opik** — loopback-only URL guard; creates traces by stable ID and, on the
+  pinned Opik 2.1.31 duplicate-ID conflict, updates them through
+  `PATCH /traces/{id}`. User messages map to Opik `input`; assistant messages
+  and final answer map to `output`; trajectory, redirect evidence, capture
+  policy, and source identity stay in `metadata`. Project name is configurable
+  (`opik_project`, default `OPIK_PROJECT_NAME` or `earwig`); threads use the
+  session ID and tags include `auto-checkpoint`, `inbox`, provider, and status.
+  It never adds anything to annotation queues — curation
   (promote/discard) is the consumer's job (for Auto-K, tooling in
   autok-server's `agent-eval`; for others, the Opik UI).
 - **jsondir** — writes normalized transcripts under a directory tree; the
@@ -229,7 +245,8 @@ One predicate, per Claude session per sweep: a compaction marker with
 timestamp later than the session's `last_swept_ms` ⇒ turns may have completed
 and been compacted inside a blind window. Set `gap_warned`, emit one
 conspicuous warning (session, compaction time, window) in the log and
-`status`. No fuzzier heuristics.
+`status`. A session with no prior Earwig checkpoint is adoption history, not a
+known daemon blind window, and is exempt. No fuzzier heuristics.
 
 Commands and process model
 --------------------------
@@ -240,15 +257,19 @@ Commands and process model
   OS advisory lock next to the spool (second invocation exits 2 with holder
   PID; lock ownership is released automatically if the process dies).
 - `earwig install` / `uninstall` — launchd agent (`KeepAlive`,
-  `RunAtLoad`) after printing the plist and confirming. Linux/systemd is a
-  later stage.
+  `RunAtLoad`) after printing the plist and confirming. The plist carries an
+  absolute program path, working directory, and install-time `PATH` so the
+  helper, `node` (development), and `codex` resolve under launchd. Linux/systemd
+  is a later stage.
 - `earwig status` — running state, last poll, last successful sweep,
   sessions tracked, turns captured (total / 24 h), exporter lag, compactions
   observed, gap warnings. Exit 1 when behind or gapped.
 - `earwig stop`, `earwig prune`, `earwig export --dir …`.
 - Config: `~/.config/earwig/config.toml` — workspace roots (default:
   the user's home-scoped provider dirs, i.e. all projects), enabled
-  providers/exporters, cadences, capture policy, helper path. Every setting
+  providers/exporters, cadences, capture policy, `spool_path`, `opik_project`,
+  and helper path. Relative configured paths resolve from the config file;
+  `$CODEX_HOME` controls the watched Codex sessions directory. Every setting
   has a working default; a missing config file is not an error.
 
 Session IDs are validated (`^[0-9a-fA-F-]{36}$` UUID shape for Claude;
@@ -261,9 +282,9 @@ Error handling
 - **Exporter down:** capture continues; row stays unexported; `status` says
   `behind`; next healthy sweep drains. The daemon never starts Docker/Colima
   or any backend.
-- **Provider read failure:** skip the session this sweep; after 3 consecutive
-  failures for the same session, surface it in `status` instead of hot
-  retrying.
+- **Provider read failure:** skip that session, join the error into the sweep
+  result, and surface it in health/status immediately. Its mtime checkpoint is
+  not advanced, so the next trigger retries without a hot inner loop.
 - **Contract drift** (helper/SDK or app-server schema surprise): fail loud,
   stop sweeping that provider, report in `status`. Never fall back to raw
   session-file parsing.
@@ -343,16 +364,14 @@ Stage C:
 Open questions
 --------------
 
-1. Opik REST batch-deletion support for `prune` (shape of implementation
-   only).
-2. Whether Codex `notify` provides a usable turn-completion trigger worth
+1. Whether Codex `notify` provides a usable turn-completion trigger worth
    wiring, or fs events + polling suffice (default assumption).
-3. Empirical confirmation that Codex `thread/read` retains pre-compaction
+2. Empirical confirmation that Codex `thread/read` retains pre-compaction
    turns (stage A spot-check; update this doc with the result). **2026-07-17:
    the app-server protocol was exercised against the local earwig workspace,
    but its list contained no completed thread to read, so retention across
    compaction remains unconfirmed rather than assumed.**
-4. Whether `getSessionMessages` pagination (`limit`/`offset`) is needed for
+3. Whether `getSessionMessages` pagination (`limit`/`offset`) is needed for
    very large sessions or whole-session reads stay fast enough (measure in
    stage A). **2026-07-17: a 367-message real Claude session read in 130 ms
    through SDK 0.3.212 without pagination. This is encouraging only; retain

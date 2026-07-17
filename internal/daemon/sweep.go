@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"github.com/CaliLuke/earwig/internal/config"
@@ -71,7 +72,7 @@ func (s *Sweeper) exporters() []exporter.Exporter {
 		x = append(x, exporter.JSONDir{Dir: s.Config.JSONDir})
 	}
 	if s.Config.OpikURL != "" {
-		x = append(x, exporter.Opik{URL: s.Config.OpikURL})
+		x = append(x, exporter.Opik{URL: s.Config.OpikURL, ProjectName: s.Config.OpikProject})
 	}
 	return x
 }
@@ -180,7 +181,14 @@ func (s *Sweeper) gap(t normalizer.Transcript) bool {
 	}
 	sid, _ := t.Session["id"].(string)
 	var swept int64
-	_ = s.Spool.DB.QueryRow(`SELECT last_swept_ms FROM sessions WHERE provider=? AND session_id=?`, t.Source, sid).Scan(&swept)
+	err := s.Spool.DB.QueryRow(`SELECT last_swept_ms FROM sessions WHERE provider=? AND session_id=?`, t.Source, sid).Scan(&swept)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false
+	}
+	if err != nil {
+		s.note("gap_check_error_"+sid, err.Error())
+		return false
+	}
 	for _, v := range t.Session["compactions"].([]any) {
 		m := v.(map[string]any)
 		if normalizerMS(m["timestamp"]) > swept {

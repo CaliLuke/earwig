@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/CaliLuke/earwig/internal/config"
+	"github.com/CaliLuke/earwig/internal/normalizer"
 	"github.com/CaliLuke/earwig/internal/spool"
 	"os"
 	"path/filepath"
@@ -83,5 +84,36 @@ func assertReadCount(t *testing.T, path string, want int) {
 			t.Fatalf("read count did not reach %d", want)
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestGapDetectionExemptsFirstSeenSession(t *testing.T) {
+	s, err := spool.Open(filepath.Join(t.TempDir(), "spool.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	sw := &Sweeper{Spool: s}
+	transcript := normalizer.Transcript{
+		SchemaVersion: 1,
+		Source:        "claude-code-agent-sdk",
+		Session: map[string]any{
+			"id":            "0aaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+			"created_at":    int64(1),
+			"last_modified": int64(2),
+			"compactions":   []any{map[string]any{"timestamp": "2026-01-01T00:00:00Z"}},
+		},
+	}
+	if sw.gap(transcript) {
+		t.Fatal("pre-adoption compaction triggered a gap warning")
+	}
+	transcript.Session["compactions"] = []any{}
+	lastSweep := time.Now().Add(-time.Minute)
+	if _, err = s.UpsertTranscript(transcript, lastSweep); err != nil {
+		t.Fatal(err)
+	}
+	transcript.Session["compactions"] = []any{map[string]any{"timestamp": time.Now().UTC().Format(time.RFC3339Nano)}}
+	if !sw.gap(transcript) {
+		t.Fatal("post-adoption compaction was not detected")
 	}
 }

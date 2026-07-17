@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"github.com/CaliLuke/earwig/internal/config"
 	"github.com/CaliLuke/earwig/internal/daemon"
+	"github.com/CaliLuke/earwig/internal/exporter"
 	"github.com/CaliLuke/earwig/internal/hooks"
 	"github.com/CaliLuke/earwig/internal/provider"
 	"github.com/CaliLuke/earwig/internal/spool"
@@ -33,7 +34,7 @@ func main() {
 	if e != nil {
 		fatal(e)
 	}
-	s, e := spool.Open(spool.DefaultPath())
+	s, e := spool.Open(cfg.SpoolPath)
 	if e != nil {
 		fatal(e)
 	}
@@ -60,7 +61,7 @@ func main() {
 			fmt.Fprintln(os.Stderr, "earwig:", e)
 		}
 	case "watch":
-		lock, e := daemon.Acquire(spool.DefaultPath() + ".lock")
+		lock, e := daemon.Acquire(cfg.SpoolPath + ".lock")
 		if e != nil {
 			fmt.Fprintln(os.Stderr, "earwig:", e)
 			os.Exit(2)
@@ -69,7 +70,7 @@ func main() {
 		ctx, stop := signalContext()
 		defer stop()
 		home, _ := os.UserHomeDir()
-		paths := []string{filepath.Join(home, ".claude", "projects"), filepath.Join(home, ".codex", "sessions")}
+		paths := []string{filepath.Join(home, ".claude", "projects"), config.CodexSessionsPath()}
 		_ = daemon.Watch(ctx, &daemon.Watcher{Sweeper: sw, Spool: s}, paths)
 	case "status":
 		total, recent, e := s.Stats()
@@ -77,7 +78,7 @@ func main() {
 			fatal(e)
 		}
 		behind := false
-		if pid, running, err := daemon.LockStatus(spool.DefaultPath() + ".lock"); err == nil && running {
+		if pid, running, err := daemon.LockStatus(cfg.SpoolPath + ".lock"); err == nil && running {
 			fmt.Printf("daemon: running (pid %d)\n", pid)
 		} else {
 			fmt.Println("daemon: stopped")
@@ -103,9 +104,9 @@ func main() {
 				behind = true
 				fmt.Printf("%s: behind (%s)\n", name, v)
 			}
-			if n, err := s.Pending(name, 1<<30); err == nil && len(n) > 0 {
+			if n, err := s.PendingCount(name); err == nil && n > 0 {
 				behind = true
-				fmt.Printf("%s: %d pending\n", name, len(n))
+				fmt.Printf("%s: %d pending\n", name, n)
 			}
 		}
 		fmt.Printf("turns: %d total / %d last 24h\n", total, recent)
@@ -119,7 +120,7 @@ func main() {
 			os.Exit(1)
 		}
 	case "stop":
-		if e := daemon.Stop(spool.DefaultPath() + ".lock"); e != nil {
+		if e := daemon.Stop(cfg.SpoolPath + ".lock"); e != nil {
 			fatal(e)
 		}
 	case "prune":
@@ -130,7 +131,22 @@ func main() {
 		if e != nil || d <= 0 {
 			fatal(fmt.Errorf("--older-than positive duration required"))
 		}
-		n, e := s.Prune(time.Now().Add(-d))
+		before := time.Now().Add(-d)
+		opikIDs, e := s.ExportedTraceIDsBefore("opik", before)
+		if e != nil {
+			fatal(e)
+		}
+		protected := map[string]bool{}
+		if len(opikIDs) > 0 {
+			if cfg.OpikURL == "" {
+				fatal(fmt.Errorf("cannot prune: opik_url is required to verify retention tags for %d exported traces", len(opikIDs)))
+			}
+			protected, e = (exporter.Opik{URL: cfg.OpikURL, ProjectName: cfg.OpikProject}).ProtectedTraceIDs(opikIDs)
+			if e != nil {
+				fatal(fmt.Errorf("cannot verify upstream retention state: %w", e))
+			}
+		}
+		n, e := s.Prune(before, protected)
 		if e != nil {
 			fatal(e)
 		}
@@ -189,7 +205,7 @@ func runHook(args []string) {
 		fmt.Fprintln(os.Stderr, "earwig:", err)
 		return
 	}
-	s, err := spool.Open(spool.DefaultPath())
+	s, err := spool.Open(cfg.SpoolPath)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "earwig:", err)
 		return

@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -40,8 +41,9 @@ func (j JSONDir) Export(rows []spool.Row) error {
 }
 
 type Opik struct {
-	URL    string
-	Client *http.Client
+	URL         string
+	ProjectName string
+	Client      *http.Client
 }
 
 func (o Opik) Name() string { return "opik" }
@@ -93,29 +95,146 @@ func (o Opik) Export(rows []spool.Row) error {
 		c = &http.Client{Timeout: 15 * time.Second}
 	}
 	for _, r := range rows {
-		var p any
+		var p spool.TurnPayload
 		if e := json.Unmarshal([]byte(r.Payload), &p); e != nil {
 			return e
 		}
-		body := map[string]any{"id": r.TraceUUID, "thread_id": r.SessionID, "name": "earwig-turn", "start_time": time.UnixMilli(r.StartedMS).UTC().Format(time.RFC3339Nano), "end_time": time.UnixMilli(r.CompletedMS).UTC().Format(time.RFC3339Nano), "metadata": p, "tags": []string{"auto-checkpoint", "inbox", r.Provider, r.Status}, "project_name": "earwig"}
-		b, _ := json.Marshal(body)
-		u := o.URL + "/api/v1/private/traces"
-		req, e := http.NewRequest(http.MethodPost, u, bytes.NewReader(b))
+		project := o.ProjectName
+		if project == "" {
+			project = "earwig"
+		}
+		mapped := mapTurnPayload(p, r)
+		create := map[string]any{
+			"id":           r.TraceUUID,
+			"thread_id":    r.SessionID,
+			"name":         providerTraceName(r.Provider),
+			"start_time":   time.UnixMilli(r.StartedMS).UTC().Format(time.RFC3339Nano),
+			"end_time":     time.UnixMilli(r.CompletedMS).UTC().Format(time.RFC3339Nano),
+			"input":        mapped["input"],
+			"output":       mapped["output"],
+			"metadata":     mapped["metadata"],
+			"tags":         []string{"auto-checkpoint", "inbox", r.Provider, r.Status},
+			"project_name": project,
+			"source":       "sdk",
+		}
+		status, responseBody, e := o.request(c, http.MethodPost, "/api/v1/private/traces", create)
 		if e != nil {
 			return e
 		}
-		req.Header.Set("Content-Type", "application/json")
-		res, e := c.Do(req)
-		if e != nil {
-			return e
+		if status == http.StatusConflict {
+			update := map[string]any{
+				"thread_id":    r.SessionID,
+				"name":         create["name"],
+				"end_time":     create["end_time"],
+				"input":        create["input"],
+				"output":       create["output"],
+				"metadata":     create["metadata"],
+				"tags":         create["tags"],
+				"project_name": project,
+				"source":       "sdk",
+			}
+			status, responseBody, e = o.request(c, http.MethodPatch, "/api/v1/private/traces/"+url.PathEscape(r.TraceUUID), update)
+			if e != nil {
+				return e
+			}
 		}
-		responseBody, _ := io.ReadAll(io.LimitReader(res.Body, 4096))
-		res.Body.Close()
-		if res.StatusCode < 200 || res.StatusCode >= 300 {
-			return fmt.Errorf("Opik export: %s: %s", res.Status, string(responseBody))
+		if status < 200 || status >= 300 {
+			return fmt.Errorf("Opik export: HTTP %d: %s", status, string(responseBody))
 		}
 	}
 	return nil
+}
+
+func (o Opik) request(client *http.Client, method, path string, body any) (int, []byte, error) {
+	var reader io.Reader
+	if body != nil {
+		b, err := json.Marshal(body)
+		if err != nil {
+			return 0, nil, err
+		}
+		reader = bytes.NewReader(b)
+	}
+	req, err := http.NewRequest(method, strings.TrimRight(o.URL, "/")+path, reader)
+	if err != nil {
+		return 0, nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	res, err := client.Do(req)
+	if err != nil {
+		return 0, nil, err
+	}
+	responseBody, _ := io.ReadAll(io.LimitReader(res.Body, 4096))
+	res.Body.Close()
+	return res.StatusCode, responseBody, nil
+}
+
+// ProtectedTraceIDs returns traces curated upstream with a retention tag.
+// Prune treats lookup failures as fatal so local evidence is never deleted
+// when upstream retention state cannot be verified.
+func (o Opik) ProtectedTraceIDs(ids []string) (map[string]bool, error) {
+	if err := loopback(o.URL); err != nil {
+		return nil, err
+	}
+	client := o.Client
+	if client == nil {
+		client = &http.Client{Timeout: 15 * time.Second}
+	}
+	protected := map[string]bool{}
+	for _, id := range ids {
+		status, body, err := o.request(client, http.MethodGet, "/api/v1/private/traces/"+url.PathEscape(id), nil)
+		if err != nil {
+			return nil, err
+		}
+		if status != http.StatusOK {
+			return nil, fmt.Errorf("Opik retention lookup %s: HTTP %d: %s", id, status, string(body))
+		}
+		var trace struct {
+			Tags []string `json:"tags"`
+		}
+		if err = json.Unmarshal(body, &trace); err != nil {
+			return nil, fmt.Errorf("Opik retention lookup %s: %w", id, err)
+		}
+		for _, tag := range trace.Tags {
+			if strings.EqualFold(tag, "kept") || strings.EqualFold(tag, "promoted") {
+				protected[id] = true
+				break
+			}
+		}
+	}
+	return protected, nil
+}
+
+func mapTurnPayload(p spool.TurnPayload, row spool.Row) map[string]any {
+	metadata := map[string]any{
+		"source":                  p.Source,
+		"source_session":          p.Session,
+		"source_turn_id":          p.Turn.ID,
+		"source_turn_status":      p.Turn.Status,
+		"duration_ms":             p.Turn.DurationMS,
+		"trajectory":              p.Turn.Trajectory,
+		"following_user_messages": p.Turn.FollowingUserMessages,
+		"capture":                 p.Capture,
+		"error":                   nil,
+		"captured_at_ms":          row.CapturedMS,
+	}
+	if p.Turn.Error != nil {
+		metadata["error"] = *p.Turn.Error
+	}
+	return map[string]any{
+		"input":    map[string]any{"user_messages": p.Turn.UserMessages},
+		"output":   map[string]any{"assistant_messages": p.Turn.AssistantMessages, "final_answer": p.Turn.FinalAnswer},
+		"metadata": metadata,
+	}
+}
+
+func providerTraceName(provider string) string {
+	if provider == "codex-app-server" {
+		return "codex-turn"
+	}
+	if provider == "claude-code-agent-sdk" {
+		return "claude-turn"
+	}
+	return "earwig-turn"
 }
 func Drain(s *spool.Spool, e Exporter) error {
 	rows, err := s.Pending(e.Name(), 500)

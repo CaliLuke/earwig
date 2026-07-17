@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"github.com/CaliLuke/earwig/internal/normalizer"
+	"github.com/google/uuid"
 	_ "modernc.org/sqlite"
 	"os"
 	"path/filepath"
@@ -45,13 +46,21 @@ func Open(path string) (*Spool, error) {
 	if e != nil {
 		return nil, e
 	}
+	// PRAGMAs are connection-local. Keep one connection per process so WAL and
+	// the writer wait policy apply to every operation, including hook sweeps
+	// racing the resident daemon.
+	db.SetMaxOpenConns(1)
 	s := &Spool{db, path}
-	_, e = db.Exec(`PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS sessions(provider TEXT, session_id TEXT, cwd TEXT, summary TEXT, last_modified_ms INTEGER, last_swept_ms INTEGER, compaction_count INTEGER DEFAULT 0, gap_warned INTEGER DEFAULT 0, PRIMARY KEY(provider,session_id)); CREATE TABLE IF NOT EXISTS turns(trace_uuid TEXT PRIMARY KEY, provider TEXT, session_id TEXT, turn_id TEXT, turn_status TEXT, started_at_ms INTEGER, completed_at_ms INTEGER, payload_json TEXT, content_hash TEXT, captured_at_ms INTEGER); CREATE TABLE IF NOT EXISTS exports(trace_uuid TEXT, exporter TEXT, exported_at_ms INTEGER, content_hash TEXT, PRIMARY KEY(trace_uuid,exporter)); CREATE TABLE IF NOT EXISTS health(key TEXT PRIMARY KEY,value_json TEXT);`)
+	_, e = db.Exec(`PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS sessions(provider TEXT, session_id TEXT, cwd TEXT, summary TEXT, last_modified_ms INTEGER, last_swept_ms INTEGER, compaction_count INTEGER DEFAULT 0, gap_warned INTEGER DEFAULT 0, PRIMARY KEY(provider,session_id)); CREATE TABLE IF NOT EXISTS turns(trace_uuid TEXT PRIMARY KEY, provider TEXT, session_id TEXT, turn_id TEXT, turn_status TEXT, started_at_ms INTEGER, completed_at_ms INTEGER, payload_json TEXT, content_hash TEXT, captured_at_ms INTEGER); CREATE TABLE IF NOT EXISTS exports(trace_uuid TEXT, exporter TEXT, exported_at_ms INTEGER, content_hash TEXT, PRIMARY KEY(trace_uuid,exporter)); CREATE TABLE IF NOT EXISTS health(key TEXT PRIMARY KEY,value_json TEXT);`)
 	if e != nil {
 		db.Close()
 		return nil, e
 	}
 	if e = s.migrateLegacyPayloads(); e != nil {
+		db.Close()
+		return nil, e
+	}
+	if e = s.migrateCodexTraceIDs(); e != nil {
 		db.Close()
 		return nil, e
 	}
@@ -147,7 +156,7 @@ func (s *Spool) UpsertTranscript(t normalizer.Transcript, now time.Time) (int, e
 		if e != nil {
 			return n, e
 		}
-		id := normalizer.TraceID(map[string]string{"claude-code-agent-sdk": "claude-code", "codex-app-server": "codex"}[t.Source], sid, turn, fallback)
+		id := traceID(t.Source, sid, turn, fallback)
 		h := hash(b)
 		r, e := s.DB.Exec(`INSERT INTO turns(trace_uuid,provider,session_id,turn_id,turn_status,started_at_ms,completed_at_ms,payload_json,content_hash,captured_at_ms) VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(trace_uuid) DO UPDATE SET payload_json=excluded.payload_json,content_hash=excluded.content_hash,captured_at_ms=excluded.captured_at_ms,turn_status=excluded.turn_status WHERE turns.content_hash<>excluded.content_hash`, id, t.Source, sid, turn.ID, turn.Status, normalizerTimestamp(turn.StartedAt), normalizerTimestamp(turn.CompletedAt), string(b), h, now.UnixMilli())
 		if e != nil {
@@ -158,6 +167,91 @@ func (s *Spool) UpsertTranscript(t normalizer.Transcript, now time.Time) (int, e
 	}
 	_, e := s.DB.Exec(`INSERT INTO sessions(provider,session_id,cwd,summary,last_modified_ms,last_swept_ms,compaction_count) VALUES(?,?,?,?,?,?,?) ON CONFLICT(provider,session_id) DO UPDATE SET cwd=excluded.cwd,summary=excluded.summary,last_modified_ms=excluded.last_modified_ms,last_swept_ms=excluded.last_swept_ms,compaction_count=excluded.compaction_count`, t.Source, sid, t.Session["cwd"], sessionSummary(t.Session), sessionLastModified(t), now.UnixMilli(), lenAny(t.Session["compactions"]))
 	return n, e
+}
+
+func traceID(source, sessionID string, turn normalizer.Turn, fallback int64) string {
+	if source == "codex-app-server" {
+		if native, ok := nativeCodexTraceID(turn.ID); ok {
+			return native
+		}
+	}
+	provider := map[string]string{"claude-code-agent-sdk": "claude-code", "codex-app-server": "codex"}[source]
+	return normalizer.TraceID(provider, sessionID, turn, fallback)
+}
+
+func nativeCodexTraceID(id string) (string, bool) {
+	parsed, err := uuid.Parse(id)
+	if err != nil || parsed.Version() != 7 || parsed.Variant() != uuid.RFC4122 {
+		return "", false
+	}
+	return parsed.String(), true
+}
+
+// migrateCodexTraceIDs converges rows captured by early Earwig versions with
+// Auto-K's native Codex turn UUID policy. Claude IDs remain deterministic
+// UUIDv7 values because its native message IDs are UUIDv4.
+func (s *Spool) migrateCodexTraceIDs() error {
+	var policy string
+	if err := s.DB.QueryRow(`SELECT value_json FROM health WHERE key='codex_trace_identity'`).Scan(&policy); err == nil && policy == `"native-v1"` {
+		return nil
+	} else if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	rows, err := s.DB.Query(`SELECT trace_uuid,payload_json FROM turns WHERE provider='codex-app-server'`)
+	if err != nil {
+		return err
+	}
+	type change struct{ oldID, newID string }
+	changes := []change{}
+	for rows.Next() {
+		var oldID, payloadJSON string
+		if err = rows.Scan(&oldID, &payloadJSON); err != nil {
+			rows.Close()
+			return err
+		}
+		var payload TurnPayload
+		if err = json.Unmarshal([]byte(payloadJSON), &payload); err != nil {
+			rows.Close()
+			return err
+		}
+		if native, ok := nativeCodexTraceID(payload.Turn.ID); ok && native != oldID {
+			changes = append(changes, change{oldID: oldID, newID: native})
+		}
+	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+	tx, err := s.DB.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, item := range changes {
+		// The old deterministic UUID may already exist remotely; do not carry its
+		// export checkpoint to the native UUID. The renamed row must be exported
+		// once under its compatibility identity.
+		if _, err = tx.Exec(`DELETE FROM exports WHERE trace_uuid=?`, item.oldID); err != nil {
+			return err
+		}
+		var exists int
+		if err = tx.QueryRow(`SELECT COUNT(*) FROM turns WHERE trace_uuid=?`, item.newID).Scan(&exists); err != nil {
+			return err
+		}
+		if exists > 0 {
+			if _, err = tx.Exec(`DELETE FROM turns WHERE trace_uuid=?`, item.oldID); err != nil {
+				return err
+			}
+		} else if _, err = tx.Exec(`UPDATE turns SET trace_uuid=? WHERE trace_uuid=?`, item.newID, item.oldID); err != nil {
+			return err
+		}
+	}
+	b, _ := json.Marshal("native-v1")
+	if _, err = tx.Exec(`INSERT INTO health(key,value_json)VALUES('codex_trace_identity',?) ON CONFLICT(key)DO UPDATE SET value_json=excluded.value_json`, string(b)); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func sessionHeader(session map[string]any) map[string]any {
@@ -238,6 +332,12 @@ func (s *Spool) Pending(exporter string, limit int) ([]Row, error) {
 	}
 	return out, rows.Err()
 }
+
+func (s *Spool) PendingCount(exporter string) (int, error) {
+	var count int
+	err := s.DB.QueryRow(`SELECT COUNT(*) FROM turns t LEFT JOIN exports e ON e.trace_uuid=t.trace_uuid AND e.exporter=? WHERE e.trace_uuid IS NULL OR e.content_hash<>t.content_hash`, exporter).Scan(&count)
+	return count, err
+}
 func (s *Spool) MarkExported(exporter string, rows []Row, now time.Time) error {
 	tx, e := s.DB.Begin()
 	if e != nil {
@@ -266,13 +366,56 @@ func (s *Spool) GetHealth(k string) (string, error) {
 }
 func (s *Spool) Stats() (int, int, error) {
 	var total, recent int
-	e := s.DB.QueryRow(`SELECT COUNT(*),SUM(CASE WHEN captured_at_ms>? THEN 1 ELSE 0 END) FROM turns`, time.Now().Add(-24*time.Hour).UnixMilli()).Scan(&total, &recent)
+	e := s.DB.QueryRow(`SELECT COUNT(*),COALESCE(SUM(CASE WHEN captured_at_ms>? THEN 1 ELSE 0 END),0) FROM turns`, time.Now().Add(-24*time.Hour).UnixMilli()).Scan(&total, &recent)
 	return total, recent, e
 }
-func (s *Spool) Prune(before time.Time) (int64, error) {
-	r, e := s.DB.Exec(`DELETE FROM turns WHERE captured_at_ms<?`, before.UnixMilli())
-	if e != nil {
-		return 0, e
+func (s *Spool) ExportedTraceIDsBefore(exporter string, before time.Time) ([]string, error) {
+	rows, err := s.DB.Query(`SELECT t.trace_uuid FROM turns t JOIN exports e ON e.trace_uuid=t.trace_uuid AND e.exporter=? WHERE t.captured_at_ms<?`, exporter, before.UnixMilli())
+	if err != nil {
+		return nil, err
 	}
-	return r.RowsAffected()
+	defer rows.Close()
+	ids := []string{}
+	for rows.Next() {
+		var id string
+		if err = rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+func (s *Spool) Prune(before time.Time, protected map[string]bool) (int64, error) {
+	tx, err := s.DB.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	if _, err = tx.Exec(`CREATE TEMP TABLE IF NOT EXISTS prune_protected(trace_uuid TEXT PRIMARY KEY); DELETE FROM prune_protected; CREATE TEMP TABLE IF NOT EXISTS prune_delete(trace_uuid TEXT PRIMARY KEY); DELETE FROM prune_delete`); err != nil {
+		return 0, err
+	}
+	for id := range protected {
+		if _, err = tx.Exec(`INSERT INTO prune_protected(trace_uuid) VALUES(?)`, id); err != nil {
+			return 0, err
+		}
+	}
+	if _, err = tx.Exec(`INSERT INTO prune_delete(trace_uuid) SELECT trace_uuid FROM turns WHERE captured_at_ms<? AND NOT EXISTS (SELECT 1 FROM prune_protected p WHERE p.trace_uuid=turns.trace_uuid)`, before.UnixMilli()); err != nil {
+		return 0, err
+	}
+	if _, err = tx.Exec(`DELETE FROM exports WHERE EXISTS (SELECT 1 FROM prune_delete p WHERE p.trace_uuid=exports.trace_uuid)`); err != nil {
+		return 0, err
+	}
+	result, err := tx.Exec(`DELETE FROM turns WHERE EXISTS (SELECT 1 FROM prune_delete p WHERE p.trace_uuid=turns.trace_uuid)`)
+	if err != nil {
+		return 0, err
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	if err = tx.Commit(); err != nil {
+		return 0, err
+	}
+	return count, nil
 }
