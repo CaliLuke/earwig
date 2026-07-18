@@ -6,8 +6,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"github.com/CaliLuke/earwig/internal/config"
-	"github.com/CaliLuke/earwig/internal/daemon"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -17,6 +15,9 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/CaliLuke/earwig/internal/config"
+	"github.com/CaliLuke/earwig/internal/daemon"
 )
 
 var lifecycleSessions = []string{
@@ -93,9 +94,8 @@ func TestV5DaemonLifecycleConcurrencyAndRSS(t *testing.T) {
 	})
 	s := openSpool(t, spoolPath)
 	waitFor(t, 10*time.Second, "restart convergence", func() bool {
-		var turns, exports int
-		_ = s.DB.QueryRow(`SELECT COUNT(*) FROM turns`).Scan(&turns)
-		_ = s.DB.QueryRow(`SELECT COUNT(*) FROM exports WHERE exporter='jsondir'`).Scan(&exports)
+		turns, _, _ := s.Stats()
+		exports, _ := s.ExportCount("jsondir")
 		return turns == len(lifecycleSessions) && exports == len(lifecycleSessions)
 	})
 

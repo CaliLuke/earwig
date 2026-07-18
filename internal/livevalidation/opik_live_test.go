@@ -8,17 +8,18 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"github.com/CaliLuke/earwig/internal/config"
-	"github.com/CaliLuke/earwig/internal/daemon"
-	"github.com/CaliLuke/earwig/internal/exporter"
-	"github.com/CaliLuke/earwig/internal/normalizer"
-	"github.com/CaliLuke/earwig/internal/spool"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/CaliLuke/earwig/internal/config"
+	"github.com/CaliLuke/earwig/internal/daemon"
+	"github.com/CaliLuke/earwig/internal/exporter"
+	"github.com/CaliLuke/earwig/internal/normalizer"
+	"github.com/CaliLuke/earwig/internal/spool"
 )
 
 func TestV4FreshExportAndUnchangedResweep(t *testing.T) {
@@ -51,16 +52,16 @@ func TestV4FreshExportAndUnchangedResweep(t *testing.T) {
 			t.Fatalf("trace tags missing %q: %#v", expected, tags)
 		}
 	}
-	var firstExportedAt int64
-	if err := s.DB.QueryRow(`SELECT exported_at_ms FROM exports WHERE trace_uuid=? AND exporter='opik'`, traceID).Scan(&firstExportedAt); err != nil {
-		t.Fatal(err)
+	firstExportedAt, exported, err := s.ExportedAt(traceID, "opik")
+	if err != nil || !exported {
+		t.Fatalf("first export checkpoint: exported=%v err=%v", exported, err)
 	}
 	if err := sweeper.Sweep(context.Background(), daemon.SweepOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	var secondExportedAt int64
-	if err := s.DB.QueryRow(`SELECT exported_at_ms FROM exports WHERE trace_uuid=? AND exporter='opik'`, traceID).Scan(&secondExportedAt); err != nil {
-		t.Fatal(err)
+	secondExportedAt, exported, err := s.ExportedAt(traceID, "opik")
+	if err != nil || !exported {
+		t.Fatalf("second export checkpoint: exported=%v err=%v", exported, err)
 	}
 	if secondExportedAt != firstExportedAt {
 		t.Fatalf("unchanged resweep wrote exporter checkpoint: %d -> %d", firstExportedAt, secondExportedAt)
@@ -127,18 +128,17 @@ func TestV4PoisonedRowIsolation(t *testing.T) {
 	if err := sweeper.Sweep(context.Background(), daemon.SweepOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	var goodExports, poisonExports int
-	_ = s.DB.QueryRow(`SELECT COUNT(*) FROM exports WHERE trace_uuid=? AND exporter='opik'`, good.TraceUUID).Scan(&goodExports)
-	_ = s.DB.QueryRow(`SELECT COUNT(*) FROM exports WHERE trace_uuid=? AND exporter='opik'`, poison.TraceUUID).Scan(&poisonExports)
-	if goodExports != 1 || poisonExports != 0 {
-		t.Fatalf("poison isolation exports good=%d poison=%d", goodExports, poisonExports)
+	_, goodExported, goodErr := s.ExportedAt(good.TraceUUID, "opik")
+	_, poisonExported, poisonErr := s.ExportedAt(poison.TraceUUID, "opik")
+	if goodErr != nil || poisonErr != nil || !goodExported || poisonExported {
+		t.Fatalf("poison isolation exports good=%v poison=%v good err=%v poison err=%v", goodExported, poisonExported, goodErr, poisonErr)
 	}
-	var failure string
-	if err := s.DB.QueryRow(`SELECT error FROM export_failures WHERE trace_uuid=? AND exporter='opik'`, poison.TraceUUID).Scan(&failure); err != nil {
-		t.Fatal(err)
+	failure, failed, failureErr := s.ExportFailure(poison.TraceUUID, "opik")
+	if failureErr != nil || !failed {
+		t.Fatalf("poison failure: found=%v err=%v", failed, failureErr)
 	}
-	if !strings.Contains(failure, "different project") || !strings.Contains(failure, "opik_project") {
-		t.Fatalf("project mismatch is not actionable: %q", failure)
+	if !strings.Contains(failure.Error, "different project") || !strings.Contains(failure.Error, "opik_project") {
+		t.Fatalf("project mismatch is not actionable: %q", failure.Error)
 	}
 	configPath := writeConfig(t, directory, fmt.Sprintf("claude = false\ncodex = false\nspool_path = %q\njsondir = \"\"\nopik_url = %q\nopik_project = %q\n", spoolPath, opikURL(), targetProject))
 	status, exitCode := runBinary(t, configPath, "status")
@@ -168,8 +168,8 @@ func TestV4ExporterDownRecovery(t *testing.T) {
 		t.Fatalf("capture with exporter down exited %d: %s", exitCode, output)
 	}
 	s := openSpool(t, spoolPath)
-	var turns int
-	if err := s.DB.QueryRow(`SELECT COUNT(*) FROM turns`).Scan(&turns); err != nil || turns != 1 {
+	turns, _, err := s.Stats()
+	if err != nil || turns != 1 {
 		t.Fatalf("down exporter lost capture: turns=%d err=%v", turns, err)
 	}
 	status, statusExit := runBinary(t, configPath, "status")
@@ -183,19 +183,19 @@ func TestV4ExporterDownRecovery(t *testing.T) {
 	if exitCode != 0 {
 		t.Fatalf("recovery sweep exited %d: %s", exitCode, output)
 	}
-	var traceID string
-	if err := s.DB.QueryRow(`SELECT trace_uuid FROM turns`).Scan(&traceID); err != nil {
-		t.Fatal(err)
+	rows, err := s.Pending("inspection", 1)
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("captured rows: %d, %v", len(rows), err)
 	}
+	traceID := rows[0].TraceUUID
 	defer cleanupOpik(t, project, traceID)
 	_ = getTrace(t, traceID)
 	status, statusExit = runBinary(t, configPath, "status")
 	if statusExit != 0 || strings.Contains(status, "pending") {
 		t.Fatalf("recovered exporter status (exit %d): %s", statusExit, status)
 	}
-	var exportRows int
-	_ = s.DB.QueryRow(`SELECT COUNT(*) FROM exports WHERE exporter='opik'`).Scan(&exportRows)
-	if exportRows != 1 {
+	exportRows, err := s.ExportCount("opik")
+	if err != nil || exportRows != 1 {
 		t.Fatalf("recovery produced duplicate checkpoints: %d", exportRows)
 	}
 	t.Logf("down exporter captured one turn, status reported behind, and recovery drained exactly once")
@@ -221,11 +221,10 @@ func TestV4PruneProtectionAndFailClosed(t *testing.T) {
 	if exitCode != 0 {
 		t.Fatalf("prune exited %d: %s", exitCode, output)
 	}
-	var keepCount, removeCount int
-	_ = s.DB.QueryRow(`SELECT COUNT(*) FROM turns WHERE trace_uuid=?`, keep.TraceUUID).Scan(&keepCount)
-	_ = s.DB.QueryRow(`SELECT COUNT(*) FROM turns WHERE trace_uuid=?`, remove.TraceUUID).Scan(&removeCount)
-	if keepCount != 1 || removeCount != 0 {
-		t.Fatalf("prune protection keep=%d remove=%d", keepCount, removeCount)
+	_, keepExists, keepErr := s.Turn(keep.TraceUUID)
+	_, removeExists, removeErr := s.Turn(remove.TraceUUID)
+	if keepErr != nil || removeErr != nil || !keepExists || removeExists {
+		t.Fatalf("prune protection keep=%v remove=%v keep err=%v remove err=%v", keepExists, removeExists, keepErr, removeErr)
 	}
 	failClosed := validationRow("fail-closed", time.Now().Add(-3*time.Hour).UnixMilli()+4000)
 	insertRow(t, s, failClosed)
@@ -255,8 +254,7 @@ func validationRow(label string, startedMS int64) spool.Row {
 
 func insertRow(t *testing.T, s *spool.Spool, row spool.Row) {
 	t.Helper()
-	_, err := s.DB.Exec(`INSERT INTO turns(trace_uuid,provider,session_id,turn_id,turn_status,started_at_ms,completed_at_ms,payload_json,content_hash,captured_at_ms) VALUES(?,?,?,?,?,?,?,?,?,?)`, row.TraceUUID, row.Provider, row.SessionID, row.TurnID, row.Status, row.StartedMS, row.CompletedMS, row.Payload, row.Hash, row.CapturedMS)
-	if err != nil {
+	if err := s.StoreRow(row); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -278,8 +276,8 @@ func stringSet(values []any) map[string]bool {
 
 func countTurns(t *testing.T, s *spool.Spool) int {
 	t.Helper()
-	var count int
-	if err := s.DB.QueryRow(`SELECT COUNT(*) FROM turns`).Scan(&count); err != nil {
+	count, _, err := s.Stats()
+	if err != nil {
 		t.Fatal(err)
 	}
 	return count

@@ -4,14 +4,15 @@ import (
 	"bufio"
 	"context"
 	"fmt"
-	"github.com/CaliLuke/earwig/internal/config"
-	"github.com/CaliLuke/earwig/internal/spool"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/CaliLuke/earwig/internal/config"
+	"github.com/CaliLuke/earwig/internal/spool"
 )
 
 func TestLockContention(t *testing.T) {
@@ -33,8 +34,8 @@ func TestLockCanBeReacquiredAfterReleaseWithPersistentFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	a.Release()
-	if _, err := os.Stat(p); err != nil {
-		t.Fatalf("lock file should persist: %v", err)
+	if _, statErr := os.Stat(p); statErr != nil {
+		t.Fatalf("lock file should persist: %v", statErr)
 	}
 	b, err := Acquire(p)
 	if err != nil {

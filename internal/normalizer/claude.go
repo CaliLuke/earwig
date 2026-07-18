@@ -41,14 +41,14 @@ func userContent(bs []any) []map[string]any {
 			out = append(out, map[string]any{"type": "image", "source": "[BINARY PAYLOAD OMITTED]"})
 		case "tool_result":
 		default:
-			out = append(out, map[string]any{"type": or(typ, "unknown")})
+			out = append(out, map[string]any{"type": orUnknown(typ)})
 		}
 	}
 	return out
 }
-func or(a, b string) string {
+func orUnknown(a string) string {
 	if a == "" {
-		return b
+		return "unknown"
 	}
 	return a
 }
@@ -68,8 +68,8 @@ func final(messages []map[string]any, status string) any {
 	}
 	same := []string{}
 	for _, m := range messages {
-		if m["kind"] == "text" && m["id"] == last["id"] && m["text"] != "" {
-			same = append(same, m["text"].(string))
+		if text, ok := m["text"].(string); ok && m["kind"] == "text" && m["id"] == last["id"] && text != "" {
+			same = append(same, text)
 		}
 	}
 	if len(same) > 1 {
@@ -244,7 +244,7 @@ func NormalizeClaude(info map[string]any, messages []any) (Transcript, error) {
 							im["command"] = RedactCommand(im["command"], "CLAUDE IMPORTER")
 						}
 					}
-					x := map[string]any{"id": valueOrNil(bm, "id"), "type": "tool_use", "tool": or(str(bm, "name"), "unknown"), "status": "pending", "requested_at": valueOrNil(e, "timestamp"), "duration_ms": nil, "input": in, "result": nil}
+					x := map[string]any{"id": valueOrNil(bm, "id"), "type": "tool_use", "tool": orUnknown(str(bm, "name")), "status": "pending", "requested_at": valueOrNil(e, "timestamp"), "duration_ms": nil, "input": in, "result": nil}
 					current.index[str(bm, "id")] = len(current.trajectory)
 					current.trajectory = append(current.trajectory, x)
 				}

@@ -4,11 +4,8 @@ package livevalidation
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/CaliLuke/earwig/internal/normalizer"
-	"github.com/CaliLuke/earwig/internal/spool"
 	"io"
 	"net"
 	"net/http"
@@ -20,6 +17,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/CaliLuke/earwig/internal/normalizer"
+	"github.com/CaliLuke/earwig/internal/spool"
 )
 
 const liveSessionID = "0aaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
@@ -297,11 +297,4 @@ func openSpool(t *testing.T, path string) *spool.Spool {
 	}
 	t.Cleanup(func() { _ = s.Close() })
 	return s
-}
-
-func contextWithTimeout(t *testing.T, duration time.Duration) context.Context {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), duration)
-	t.Cleanup(cancel)
-	return ctx
 }

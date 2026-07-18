@@ -4,11 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/CaliLuke/earwig/internal/normalizer"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/CaliLuke/earwig/internal/normalizer"
 )
 
 func sample() normalizer.Transcript {
@@ -21,15 +22,15 @@ func TestUpsertAndRehash(t *testing.T) {
 	}
 	defer s.Close()
 	x := sample()
-	if n, e := s.UpsertTranscript(x, time.Now()); e != nil || n != 1 {
-		t.Fatalf("%d %v", n, e)
+	if n, upsertErr := s.UpsertTranscript(x, time.Now()); upsertErr != nil || n != 1 {
+		t.Fatalf("%d %v", n, upsertErr)
 	}
-	if n, e := s.UpsertTranscript(x, time.Now()); e != nil || n != 0 {
-		t.Fatalf("%d %v", n, e)
+	if n, upsertErr := s.UpsertTranscript(x, time.Now()); upsertErr != nil || n != 0 {
+		t.Fatalf("%d %v", n, upsertErr)
 	}
 	x.Turns[0].Status = "failed"
-	if n, e := s.UpsertTranscript(x, time.Now()); e != nil || n != 1 {
-		t.Fatalf("%d %v", n, e)
+	if n, upsertErr := s.UpsertTranscript(x, time.Now()); upsertErr != nil || n != 1 {
+		t.Fatalf("%d %v", n, upsertErr)
 	}
 	r, e := s.Pending("test", 10)
 	if e != nil || len(r) != 1 {
@@ -41,6 +42,32 @@ func TestUpsertAndRehash(t *testing.T) {
 	r, e = s.Pending("test", 10)
 	if e != nil || len(r) != 0 {
 		t.Fatal(e, len(r))
+	}
+}
+
+func TestTurnAndExportCountInspection(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "spool.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err = s.UpsertTranscript(sample(), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := s.Pending("test", 10)
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("pending rows = %d, %v", len(rows), err)
+	}
+	stored, exists, err := s.Turn(rows[0].TraceUUID)
+	if err != nil || !exists || stored.TraceUUID != rows[0].TraceUUID {
+		t.Fatalf("stored turn = %#v, exists=%v, err=%v", stored, exists, err)
+	}
+	if err = s.MarkExported("test", rows, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	count, err := s.ExportCount("test")
+	if err != nil || count != 1 {
+		t.Fatalf("export count = %d, %v", count, err)
 	}
 }
 
@@ -78,8 +105,8 @@ func TestPayloadIsPerTurnAndIgnoresMutableSessionFields(t *testing.T) {
 	x.Session["summary"] = "later"
 	x.Session["last_modified"] = int64(200)
 	x.Session["compactions"] = []any{map[string]any{"timestamp": "2026-01-01T00:00:02Z"}}
-	if n, err := s.UpsertTranscript(x, time.Now()); err != nil || n != 0 {
-		t.Fatalf("mutable session metadata rewrote turn: %d, %v", n, err)
+	if n, upsertErr := s.UpsertTranscript(x, time.Now()); upsertErr != nil || n != 0 {
+		t.Fatalf("mutable session metadata rewrote turn: %d, %v", n, upsertErr)
 	}
 	rows, err = s.Pending("test", 10)
 	if err != nil || len(rows) != 0 {
@@ -128,10 +155,10 @@ func TestOpenMigratesLegacyWholeTranscriptPayload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = s.DB.Exec(`INSERT INTO turns(trace_uuid,provider,session_id,turn_id,turn_status,started_at_ms,completed_at_ms,payload_json,content_hash,captured_at_ms) VALUES(?,?,?,?,?,?,?,?,?,?)`, "legacy", x.Source, x.Session["id"], x.Turns[0].ID, x.Turns[0].Status, 1, 2, string(legacy), "old-hash", 3); err != nil {
+	if _, err = s.db.Exec(`INSERT INTO turns(trace_uuid,provider,session_id,turn_id,turn_status,started_at_ms,completed_at_ms,payload_json,content_hash,captured_at_ms) VALUES(?,?,?,?,?,?,?,?,?,?)`, "legacy", x.Source, x.Session["id"], x.Turns[0].ID, x.Turns[0].Status, 1, 2, string(legacy), "old-hash", 3); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = s.DB.Exec(`DELETE FROM health WHERE key='payload_format'`); err != nil {
+	if _, err = s.db.Exec(`DELETE FROM health WHERE key='payload_format'`); err != nil {
 		t.Fatal(err)
 	}
 	if err = s.Close(); err != nil {
@@ -182,10 +209,10 @@ func TestConcurrentSpoolsWaitForWriter(t *testing.T) {
 	defer b.Close()
 
 	var timeout int
-	if err = b.DB.QueryRow(`PRAGMA busy_timeout`).Scan(&timeout); err != nil || timeout != 5000 {
+	if err = b.db.QueryRow(`PRAGMA busy_timeout`).Scan(&timeout); err != nil || timeout != 5000 {
 		t.Fatalf("busy_timeout = %d, %v", timeout, err)
 	}
-	conn, err := a.DB.Conn(context.Background())
+	conn, err := a.db.Conn(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -273,13 +300,13 @@ func TestOpenMigratesCodexTraceIDsAndQueuesNativeExport(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = s.DB.Exec(`INSERT INTO turns(trace_uuid,provider,session_id,turn_id,turn_status,started_at_ms,completed_at_ms,payload_json,content_hash,captured_at_ms) VALUES(?,?,?,?,?,?,?,?,?,?)`, oldID, "codex-app-server", "thread", nativeID, "completed", 1, 2, string(payload), "hash", 3); err != nil {
+	if _, err = s.db.Exec(`INSERT INTO turns(trace_uuid,provider,session_id,turn_id,turn_status,started_at_ms,completed_at_ms,payload_json,content_hash,captured_at_ms) VALUES(?,?,?,?,?,?,?,?,?,?)`, oldID, "codex-app-server", "thread", nativeID, "completed", 1, 2, string(payload), "hash", 3); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = s.DB.Exec(`INSERT INTO exports(trace_uuid,exporter,exported_at_ms,content_hash) VALUES(?,?,?,?)`, oldID, "opik", 4, "hash"); err != nil {
+	if _, err = s.db.Exec(`INSERT INTO exports(trace_uuid,exporter,exported_at_ms,content_hash) VALUES(?,?,?,?)`, oldID, "opik", 4, "hash"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = s.DB.Exec(`DELETE FROM health WHERE key='codex_trace_identity'`); err != nil {
+	if _, err = s.db.Exec(`DELETE FROM health WHERE key='codex_trace_identity'`); err != nil {
 		t.Fatal(err)
 	}
 	if err = s.Close(); err != nil {
@@ -291,9 +318,9 @@ func TestOpenMigratesCodexTraceIDsAndQueuesNativeExport(t *testing.T) {
 		t.Fatal(err)
 	}
 	var oldTurns, nativeTurns, oldExports int
-	_ = s.DB.QueryRow(`SELECT COUNT(*) FROM turns WHERE trace_uuid=?`, oldID).Scan(&oldTurns)
-	_ = s.DB.QueryRow(`SELECT COUNT(*) FROM turns WHERE trace_uuid=?`, nativeID).Scan(&nativeTurns)
-	_ = s.DB.QueryRow(`SELECT COUNT(*) FROM exports WHERE trace_uuid=?`, oldID).Scan(&oldExports)
+	_ = s.db.QueryRow(`SELECT COUNT(*) FROM turns WHERE trace_uuid=?`, oldID).Scan(&oldTurns)
+	_ = s.db.QueryRow(`SELECT COUNT(*) FROM turns WHERE trace_uuid=?`, nativeID).Scan(&nativeTurns)
+	_ = s.db.QueryRow(`SELECT COUNT(*) FROM exports WHERE trace_uuid=?`, oldID).Scan(&oldExports)
 	if oldTurns != 0 || nativeTurns != 1 || oldExports != 0 {
 		t.Fatalf("migration counts old=%d native=%d exports=%d", oldTurns, nativeTurns, oldExports)
 	}
@@ -322,19 +349,19 @@ func TestPruneRetainsProtectedTracesAndCountsWithoutPayloads(t *testing.T) {
 	}
 	defer s.Close()
 	for _, id := range []string{"delete", "keep"} {
-		if _, err = s.DB.Exec(`INSERT INTO turns(trace_uuid,provider,session_id,turn_id,turn_status,started_at_ms,completed_at_ms,payload_json,content_hash,captured_at_ms) VALUES(?,?,?,?,?,?,?,?,?,?)`, id, "provider", "session", id, "completed", 1, 2, `{"turn":{}}`, "hash", 1); err != nil {
+		if _, err = s.db.Exec(`INSERT INTO turns(trace_uuid,provider,session_id,turn_id,turn_status,started_at_ms,completed_at_ms,payload_json,content_hash,captured_at_ms) VALUES(?,?,?,?,?,?,?,?,?,?)`, id, "provider", "session", id, "completed", 1, 2, `{"turn":{}}`, "hash", 1); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if count, err := s.PendingCount("jsondir"); err != nil || count != 2 {
-		t.Fatalf("pending count = %d, %v", count, err)
+	if count, countErr := s.PendingCount("jsondir"); countErr != nil || count != 2 {
+		t.Fatalf("pending count = %d, %v", count, countErr)
 	}
 	pruned, err := s.Prune(time.Now(), map[string]bool{"keep": true})
 	if err != nil || pruned != 1 {
 		t.Fatalf("pruned = %d, %v", pruned, err)
 	}
 	var remaining string
-	if err = s.DB.QueryRow(`SELECT trace_uuid FROM turns`).Scan(&remaining); err != nil || remaining != "keep" {
+	if err = s.db.QueryRow(`SELECT trace_uuid FROM turns`).Scan(&remaining); err != nil || remaining != "keep" {
 		t.Fatalf("remaining = %q, %v", remaining, err)
 	}
 }
@@ -346,7 +373,7 @@ func TestPermanentExportFailureRetriesOnContentOrTargetChange(t *testing.T) {
 	}
 	defer s.Close()
 	row := Row{TraceUUID: "trace", Provider: "p", SessionID: "session", TurnID: "turn", Status: "completed", Payload: `{}`, Hash: "hash-1"}
-	if _, err = s.DB.Exec(`INSERT INTO turns VALUES(?,?,?,?,?,?,?,?,?,?)`, row.TraceUUID, row.Provider, row.SessionID, row.TurnID, row.Status, 1, 2, row.Payload, row.Hash, 1); err != nil {
+	if _, err = s.db.Exec(`INSERT INTO turns VALUES(?,?,?,?,?,?,?,?,?,?)`, row.TraceUUID, row.Provider, row.SessionID, row.TurnID, row.Status, 1, 2, row.Payload, row.Hash, 1); err != nil {
 		t.Fatal(err)
 	}
 	if err = s.RecordExportFailure("opik", "target-a", row, fmt.Errorf("permanent"), true, time.Now()); err != nil {
@@ -358,7 +385,7 @@ func TestPermanentExportFailureRetriesOnContentOrTargetChange(t *testing.T) {
 	if pending, pendingErr := s.PendingFor("opik", "target-b", 10); pendingErr != nil || len(pending) != 1 {
 		t.Fatalf("target change did not retry: %#v, %v", pending, pendingErr)
 	}
-	if _, err = s.DB.Exec(`UPDATE turns SET content_hash='hash-2' WHERE trace_uuid='trace'`); err != nil {
+	if _, err = s.db.Exec(`UPDATE turns SET content_hash='hash-2' WHERE trace_uuid='trace'`); err != nil {
 		t.Fatal(err)
 	}
 	if pending, pendingErr := s.PendingFor("opik", "target-a", 10); pendingErr != nil || len(pending) != 1 {

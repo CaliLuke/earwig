@@ -2,14 +2,15 @@ package exporter
 
 import (
 	"encoding/json"
-	"github.com/CaliLuke/earwig/internal/normalizer"
-	"github.com/CaliLuke/earwig/internal/spool"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/CaliLuke/earwig/internal/normalizer"
+	"github.com/CaliLuke/earwig/internal/spool"
 )
 
 // These black-box regressions deliberately use only the public exporter/spool
@@ -65,23 +66,22 @@ func TestContractPermanentPoisonDoesNotBlockLaterRows(t *testing.T) {
 	}
 	defer s.Close()
 	for _, row := range []spool.Row{poison, good} {
-		if _, err = s.DB.Exec(`INSERT INTO turns(trace_uuid,provider,session_id,turn_id,turn_status,started_at_ms,completed_at_ms,payload_json,content_hash,captured_at_ms) VALUES(?,?,?,?,?,?,?,?,?,?)`, row.TraceUUID, row.Provider, row.SessionID, row.TurnID, row.Status, row.StartedMS, row.CompletedMS, row.Payload, row.Hash, row.CapturedMS); err != nil {
+		if err = s.StoreRow(row); err != nil {
 			t.Fatal(err)
 		}
 	}
 	if err = Drain(s, Opik{URL: server.URL, ProjectName: "target"}); err == nil || !strings.Contains(err.Error(), "quarantined") {
 		t.Fatalf("permanent failure was not surfaced: %v", err)
 	}
-	var goodExports, poisonFailures int
-	_ = s.DB.QueryRow(`SELECT COUNT(*) FROM exports WHERE trace_uuid=? AND exporter='opik'`, good.TraceUUID).Scan(&goodExports)
-	_ = s.DB.QueryRow(`SELECT COUNT(*) FROM export_failures WHERE trace_uuid=? AND exporter='opik' AND permanent=1`, poison.TraceUUID).Scan(&poisonFailures)
-	if goodExports != 1 || poisonFailures != 1 {
-		t.Fatalf("poison blocked drain: good exports=%d poison failures=%d", goodExports, poisonFailures)
+	_, goodExported, exportErr := s.ExportedAt(good.TraceUUID, "opik")
+	failure, poisonFailed, failureErr := s.ExportFailure(poison.TraceUUID, "opik")
+	if exportErr != nil || failureErr != nil || !goodExported || !poisonFailed || !failure.Permanent {
+		t.Fatalf("poison blocked drain: good exported=%v poison failure=%#v export err=%v failure err=%v", goodExported, failure, exportErr, failureErr)
 	}
 }
 
 func contractRow(label string, startedMS int64) spool.Row {
-	traceID := normalizer.DeterministicUUIDv7(int64(startedMS), "claude-code", "contract-session", label)
+	traceID := normalizer.DeterministicUUIDv7(startedMS, "claude-code", "contract-session", label)
 	payload, _ := json.Marshal(spool.TurnPayload{
 		SchemaVersion: 1,
 		Source:        "claude-code-agent-sdk",
@@ -90,5 +90,5 @@ func contractRow(label string, startedMS int64) spool.Row {
 			ID: label, Status: "completed", UserMessages: []map[string]any{}, AssistantMessages: []map[string]any{}, Trajectory: []map[string]any{}, FollowingUserMessages: []map[string]any{},
 		},
 	})
-	return spool.Row{TraceUUID: traceID, Provider: "claude-code-agent-sdk", SessionID: "contract-session", TurnID: label, Status: "completed", StartedMS: int64(startedMS), CompletedMS: int64(startedMS + 1), Payload: string(payload), Hash: "hash-" + label, CapturedMS: int64(startedMS)}
+	return spool.Row{TraceUUID: traceID, Provider: "claude-code-agent-sdk", SessionID: "contract-session", TurnID: label, Status: "completed", StartedMS: startedMS, CompletedMS: startedMS + 1, Payload: string(payload), Hash: "hash-" + label, CapturedMS: startedMS}
 }

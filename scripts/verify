@@ -4,7 +4,124 @@ set -eu
 repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$repo_root"
 
+fix=${1:-}
+case "$fix" in
+  ''|--fix) ;;
+  *)
+    printf 'usage: %s [--fix]\n' "$0" >&2
+    exit 2
+    ;;
+esac
+
 section() { printf '\n=== %s ===\n' "$1"; }
+
+require_tool() {
+  if ! command -v "$1" >/dev/null 2>&1; then
+    printf 'missing required quality-gate tool: %s\n' "$1" >&2
+    exit 1
+  fi
+}
+
+restore_module_files() {
+  if [ "$tidy_restored" -eq 1 ]; then
+    return
+  fi
+  tidy_restored=1
+  cp "$tidy_tmp/go.mod" go.mod
+  if [ "$had_go_sum" -eq 1 ]; then
+    cp "$tidy_tmp/go.sum" go.sum
+  else
+    rm -f go.sum
+  fi
+  case "$tidy_tmp" in
+    "${TMPDIR:-/tmp}"/earwig-mod-tidy.*) rm -rf -- "$tidy_tmp" ;;
+    *) printf 'refusing to clean unexpected temp path %s\n' "$tidy_tmp" >&2 ;;
+  esac
+}
+
+section 'Quality gates'
+for tool in go goimports golangci-lint deadcode dupl gocyclo; do
+  require_tool "$tool"
+done
+
+go build ./...
+printf 'PASS go build ./...\n'
+
+package_dirs=$(go list -f '{{.Dir}}' ./... | tr '\n' ' ')
+if [ "$fix" = '--fix' ]; then
+  # Package directories come from the Go toolchain and are intentionally split.
+  # shellcheck disable=SC2086
+  goimports -local github.com/CaliLuke/earwig -w $package_dirs
+  printf 'PASS goimports -w\n'
+else
+  # shellcheck disable=SC2086
+  goimports_output=$(goimports -local github.com/CaliLuke/earwig -l $package_dirs)
+  if [ -n "$goimports_output" ]; then
+    printf '%s\n' "$goimports_output"
+    exit 1
+  fi
+  printf 'PASS goimports -l (no output)\n'
+fi
+
+tidy_tmp=$(mktemp -d "${TMPDIR:-/tmp}/earwig-mod-tidy.XXXXXX")
+cp go.mod "$tidy_tmp/go.mod"
+had_go_sum=0
+tidy_restored=0
+if [ -f go.sum ]; then
+  had_go_sum=1
+  cp go.sum "$tidy_tmp/go.sum"
+fi
+trap restore_module_files EXIT HUP INT TERM
+go mod tidy
+tidy_failed=0
+if ! diff -u "$tidy_tmp/go.mod" go.mod; then
+  tidy_failed=1
+fi
+if [ "$had_go_sum" -eq 1 ]; then
+  if ! diff -u "$tidy_tmp/go.sum" go.sum; then
+    tidy_failed=1
+  fi
+elif [ -f go.sum ]; then
+  printf 'go mod tidy created go.sum\n'
+  tidy_failed=1
+fi
+restore_module_files
+trap - EXIT HUP INT TERM
+if [ "$tidy_failed" -ne 0 ]; then
+  printf 'go.mod/go.sum are out of sync; run: go mod tidy\n' >&2
+  exit 1
+fi
+printf 'PASS go mod tidy drift check\n'
+
+if [ "$fix" = '--fix' ]; then
+  golangci-lint run --fix
+else
+  golangci-lint run
+fi
+printf 'PASS golangci-lint\n'
+
+# Include the live-tagged validation surface in reachability analysis. This
+# loads those tests but does not run them or contact external services.
+deadcode_output=$(deadcode -test -tags=live ./...)
+if [ -n "$deadcode_output" ]; then
+  printf '%s\n' "$deadcode_output"
+  exit 1
+fi
+printf 'PASS deadcode (no output)\n'
+
+# dupl exits successfully when it finds clones, so findings must be checked.
+# shellcheck disable=SC2086
+dupl_output=$(dupl -plumbing -threshold 50 $package_dirs)
+if [ -n "$dupl_output" ]; then
+  printf '%s\n' "$dupl_output"
+  exit 1
+fi
+printf 'PASS dupl -threshold 50 (no clones)\n'
+
+section 'Complexity report (non-blocking)'
+# gocyclo uses a non-zero status when it reports functions above the threshold.
+# shellcheck disable=SC2086
+gocyclo -over 15 -avg $package_dirs || true
 
 section 'V1 static gates'
 gofmt_output=$(gofmt -l .)

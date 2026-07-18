@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/CaliLuke/earwig/internal/spool"
-	"github.com/fsnotify/fsnotify"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -13,6 +11,10 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/fsnotify/fsnotify"
+
+	"github.com/CaliLuke/earwig/internal/spool"
 )
 
 type Lock struct {
@@ -67,7 +69,7 @@ func LockStatus(path string) (pid int, running bool, err error) {
 	if err != nil {
 		return 0, false, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	if err = syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err == nil {
 		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
 		return 0, false, nil
@@ -145,7 +147,7 @@ func Watch(ctx context.Context, w *Watcher, paths []string) error {
 	if e != nil {
 		return e
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	for _, p := range paths {
 		_ = filepath.WalkDir(p, func(path string, d os.DirEntry, err error) error {
 			if err == nil && d.IsDir() {

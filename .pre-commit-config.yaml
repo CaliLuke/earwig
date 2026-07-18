@@ -1,0 +1,10 @@
+repos:
+  - repo: local
+    hooks:
+      - id: quality-gates
+        name: Go quality gates
+        entry: ./check.sh
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-commit, pre-push, manual]

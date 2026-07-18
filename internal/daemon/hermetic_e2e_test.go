@@ -5,8 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/CaliLuke/earwig/internal/config"
-	"github.com/CaliLuke/earwig/internal/spool"
 	"log"
 	"os"
 	"path/filepath"
@@ -14,6 +12,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/CaliLuke/earwig/internal/config"
+	"github.com/CaliLuke/earwig/internal/spool"
 )
 
 func TestHermeticClaudeSDKEndToEnd(t *testing.T) {
@@ -74,8 +75,8 @@ func TestHermeticClaudeSDKEndToEnd(t *testing.T) {
 	}
 	assertReadCount(t, readLog, 1)
 
-	var turnCount int
-	if err = s.DB.QueryRow(`SELECT COUNT(*) FROM turns`).Scan(&turnCount); err != nil || turnCount != 2 {
+	turnCount, _, err := s.Stats()
+	if err != nil || turnCount != 2 {
 		t.Fatalf("completed/failed turn count = %d, %v", turnCount, err)
 	}
 	rows, err := s.Pending("inspection", 10)
@@ -92,23 +93,24 @@ func TestHermeticClaudeSDKEndToEnd(t *testing.T) {
 	if len(first.Turn.FollowingUserMessages) != 1 {
 		t.Fatalf("redirect linkage missing: %#v", first.Turn.FollowingUserMessages)
 	}
-	var compactions int
-	if err = s.DB.QueryRow(`SELECT compaction_count FROM sessions`).Scan(&compactions); err != nil || compactions != 1 {
-		t.Fatalf("compactions = %d, %v", compactions, err)
+	const provider, sessionID = "claude-code-agent-sdk", "0aaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+	state, found, err := s.Session(provider, sessionID)
+	if err != nil || !found || state.CompactionCount != 1 {
+		t.Fatalf("session state = %#v, found=%v, err=%v", state, found, err)
 	}
-	var gapWarned int
-	if err = s.DB.QueryRow(`SELECT gap_warned FROM sessions`).Scan(&gapWarned); err != nil || gapWarned != 0 || strings.Contains(sweepLog.String(), "GAP WARNING") {
-		t.Fatalf("pre-adoption compaction warned: gap=%d log=%q err=%v", gapWarned, sweepLog.String(), err)
+	if state.GapWarned || strings.Contains(sweepLog.String(), "GAP WARNING") {
+		t.Fatalf("pre-adoption compaction warned: state=%#v log=%q", state, sweepLog.String())
 	}
 
 	if err = sweeper.Sweep(context.Background(), SweepOptions{Provider: "claude"}); err != nil {
 		t.Fatal(err)
 	}
 	assertReadCount(t, readLog, 1)
-	var adoptedAtMS int64
-	if err = s.DB.QueryRow(`SELECT last_swept_ms FROM sessions`).Scan(&adoptedAtMS); err != nil {
+	state, found, err = s.Session(provider, sessionID)
+	if err != nil || !found {
 		t.Fatal(err)
 	}
+	adoptedAtMS := state.LastSweptMS
 	compactedAt := time.UnixMilli(adoptedAtMS + 1).UTC().Format(time.RFC3339Nano)
 	compactionEntry, err := json.Marshal(map[string]any{
 		"type": "user", "uuid": "99999999-9999-4999-8999-999999999999", "parentUuid": "88888888-8888-4888-8888-888888888888", "sessionId": "0aaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", "timestamp": compactedAt, "cwd": workspace, "gitBranch": "main", "version": "1.0.0", "userType": "external", "isSidechain": false,
@@ -136,8 +138,9 @@ func TestHermeticClaudeSDKEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertReadCount(t, readLog, 2)
-	if err = s.DB.QueryRow(`SELECT gap_warned,compaction_count FROM sessions`).Scan(&gapWarned, &compactions); err != nil || gapWarned != 1 || compactions != 2 {
-		t.Fatalf("post-adoption compaction gap=%d compactions=%d err=%v", gapWarned, compactions, err)
+	state, found, err = s.Session(provider, sessionID)
+	if err != nil || !found || !state.GapWarned || state.CompactionCount != 2 {
+		t.Fatalf("post-adoption session state=%#v found=%v err=%v", state, found, err)
 	}
 	if count := strings.Count(sweepLog.String(), "GAP WARNING"); count != 1 {
 		t.Fatalf("gap warning count = %d: %q", count, sweepLog.String())

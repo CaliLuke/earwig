@@ -3,8 +3,6 @@ package exporter
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/CaliLuke/earwig/internal/normalizer"
-	"github.com/CaliLuke/earwig/internal/spool"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +10,9 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	"github.com/CaliLuke/earwig/internal/normalizer"
+	"github.com/CaliLuke/earwig/internal/spool"
 )
 
 type redirectProbeTransport struct{ external atomic.Bool }
@@ -54,7 +55,7 @@ func TestJSONDirIdempotentDrain(t *testing.T) {
 		t.Fatal(e)
 	}
 	defer s.Close()
-	_, e = s.DB.Exec(`INSERT INTO turns VALUES('trace','p','session','turn','completed',1,2,'{}','hash',1)`)
+	e = s.StoreRow(spool.Row{TraceUUID: "trace", Provider: "p", SessionID: "session", TurnID: "turn", Status: "completed", StartedMS: 1, CompletedMS: 2, Payload: `{}`, Hash: "hash", CapturedMS: 1})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -185,7 +186,7 @@ func TestDrainQuarantinesPermanentRowAndContinues(t *testing.T) {
 	}
 	defer s.Close()
 	for i, id := range []string{"poison", "good-1", "good-2"} {
-		if _, err = s.DB.Exec(`INSERT INTO turns VALUES(?,?,?,?,?,?,?,?,?,?)`, id, "p", "session", id, "completed", i+1, i+2, `{}`, "hash", 1); err != nil {
+		if err = s.StoreRow(spool.Row{TraceUUID: id, Provider: "p", SessionID: "session", TurnID: id, Status: "completed", StartedMS: int64(i + 1), CompletedMS: int64(i + 2), Payload: `{}`, Hash: "hash", CapturedMS: 1}); err != nil {
 			t.Fatal(err)
 		}
 	}

@@ -4,14 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/CaliLuke/earwig/internal/config"
-	"github.com/CaliLuke/earwig/internal/normalizer"
-	"github.com/CaliLuke/earwig/internal/spool"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/CaliLuke/earwig/internal/config"
+	"github.com/CaliLuke/earwig/internal/normalizer"
+	"github.com/CaliLuke/earwig/internal/spool"
 )
 
 func TestClaudeSweepReadsOnlyNewOrChangedSessions(t *testing.T) {

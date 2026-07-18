@@ -4,12 +4,6 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"github.com/CaliLuke/earwig/internal/config"
-	"github.com/CaliLuke/earwig/internal/daemon"
-	"github.com/CaliLuke/earwig/internal/exporter"
-	"github.com/CaliLuke/earwig/internal/hooks"
-	"github.com/CaliLuke/earwig/internal/provider"
-	"github.com/CaliLuke/earwig/internal/spool"
 	"log"
 	"os"
 	"os/signal"
@@ -17,6 +11,13 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/CaliLuke/earwig/internal/config"
+	"github.com/CaliLuke/earwig/internal/daemon"
+	"github.com/CaliLuke/earwig/internal/exporter"
+	"github.com/CaliLuke/earwig/internal/hooks"
+	"github.com/CaliLuke/earwig/internal/provider"
+	"github.com/CaliLuke/earwig/internal/spool"
 )
 
 func main() {
@@ -38,7 +39,7 @@ func main() {
 	if e != nil {
 		fatal(e)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	sw := &daemon.Sweeper{Config: cfg, Spool: s, Log: log.New(os.Stderr, "earwig: ", log.LstdFlags)}
 	switch os.Args[1] {
 	case "sweep":
@@ -88,9 +89,8 @@ func main() {
 				fmt.Printf("%s: %s\n", key, v)
 			}
 		}
-		var sessions, compactions int
-		_ = s.DB.QueryRow(`SELECT COUNT(*), COALESCE(SUM(compaction_count),0) FROM sessions`).Scan(&sessions, &compactions)
-		fmt.Printf("sessions: %d; compactions observed: %d\n", sessions, compactions)
+		sessionStats, _ := s.SessionStats()
+		fmt.Printf("sessions: %d; compactions observed: %d\n", sessionStats.Sessions, sessionStats.Compactions)
 		names := []string{}
 		if cfg.JSONDir != "" {
 			names = append(names, "jsondir")
@@ -110,11 +110,9 @@ func main() {
 			}
 		}
 		fmt.Printf("turns: %d total / %d last 24h\n", total, recent)
-		var gaps int
-		_ = s.DB.QueryRow(`SELECT COUNT(*) FROM sessions WHERE gap_warned=1`).Scan(&gaps)
-		if gaps > 0 {
+		if sessionStats.GapWarnings > 0 {
 			behind = true
-			fmt.Printf("gap warnings: %d\n", gaps)
+			fmt.Printf("gap warnings: %d\n", sessionStats.GapWarnings)
 		}
 		if behind {
 			os.Exit(1)
@@ -210,7 +208,7 @@ func runHook(args []string) {
 		fmt.Fprintln(os.Stderr, "earwig:", err)
 		return
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	sw := &daemon.Sweeper{Config: cfg, Spool: s, Log: log.New(os.Stderr, "earwig: ", log.LstdFlags)}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()

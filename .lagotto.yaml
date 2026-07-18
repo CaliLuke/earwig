@@ -1,0 +1,13 @@
+version: 1
+
+# Spool is intentionally the single owner of one SQLite connection and its
+# cross-table consistency rules. Callers use narrow domain methods; the raw
+# database handle is private.
+suppress:
+  - G1@internal/spool
+
+  # These single-file packages enforce deliberate ownership boundaries:
+  # config resolves all process configuration, and hooks exclusively owns
+  # writes to Claude's user settings.
+  - G12@internal/config
+  - G12@internal/hooks

@@ -15,13 +15,13 @@ func codexUserContent(a []any) []map[string]any {
 		case "skill", "mention":
 			o = append(o, map[string]any{"type": typ, "name": valueOrNil(m, "name"), "path": valueOrNil(m, "path")})
 		default:
-			o = append(o, map[string]any{"type": or(typ, "unknown")})
+			o = append(o, map[string]any{"type": orUnknown(typ)})
 		}
 	}
 	return o
 }
 func codexTrajectory(m map[string]any) map[string]any {
-	base := map[string]any{"id": valueOrNil(m, "id"), "type": or(str(m, "type"), "unknown")}
+	base := map[string]any{"id": valueOrNil(m, "id"), "type": orUnknown(str(m, "type"))}
 	switch str(m, "type") {
 	case "commandExecution":
 		base["status"] = valueOrNil(m, "status")

@@ -20,11 +20,6 @@ func SettingsPath() string {
 	return filepath.Join(h, ".claude", "settings.json")
 }
 
-// BackupPath is retained for compatibility with installs made by older
-// versions. New installs do not use snapshots: settings are merged and
-// managed hook entries are removed surgically.
-func BackupPath() string { return SettingsPath() + ".earwig-backup" }
-
 func command(binary string) string {
 	return strconv.Quote(binary) + " hook claude " + ManagedArgument
 }
@@ -90,12 +85,12 @@ func removeAt(path string) error {
 	}
 	hooks, ok := rawHooks.(map[string]any)
 	if !ok {
-		return fmt.Errorf("Claude settings hooks must be an object")
+		return fmt.Errorf("claude settings hooks must be an object")
 	}
 	for event, rawGroups := range hooks {
 		groups, ok := rawGroups.([]any)
 		if !ok {
-			return fmt.Errorf("Claude settings hooks.%s must be an array", event)
+			return fmt.Errorf("claude settings hooks.%s must be an array", event)
 		}
 		kept, err := filterManaged(event, groups)
 		if err != nil {
@@ -125,7 +120,7 @@ func SessionID(r io.Reader) (string, error) {
 		return "", fmt.Errorf("read Claude hook input: %w", err)
 	}
 	if input.SessionID == "" {
-		return "", fmt.Errorf("Claude hook input omitted session_id")
+		return "", fmt.Errorf("claude hook input omitted session_id")
 	}
 	return input.SessionID, nil
 }
@@ -140,7 +135,7 @@ func readSettings(path string) (map[string]any, error) {
 	}
 	var x map[string]any
 	if err := json.Unmarshal(b, &x); err != nil {
-		return nil, fmt.Errorf("Claude settings are not valid JSON: %w", err)
+		return nil, fmt.Errorf("claude settings are not valid JSON: %w", err)
 	}
 	if x == nil {
 		x = map[string]any{}
@@ -155,7 +150,7 @@ func objectField(parent map[string]any, key string) (map[string]any, error) {
 	}
 	m, ok := v.(map[string]any)
 	if !ok {
-		return nil, fmt.Errorf("Claude settings %s must be an object", key)
+		return nil, fmt.Errorf("claude settings %s must be an object", key)
 	}
 	return m, nil
 }
@@ -167,7 +162,7 @@ func arrayField(parent map[string]any, key string) ([]any, error) {
 	}
 	a, ok := v.([]any)
 	if !ok {
-		return nil, fmt.Errorf("Claude settings hooks.%s must be an array", key)
+		return nil, fmt.Errorf("claude settings hooks.%s must be an array", key)
 	}
 	return a, nil
 }
@@ -196,7 +191,7 @@ func filterManaged(event string, groups []any) ([]any, error) {
 		}
 		commands, ok := rawCommands.([]any)
 		if !ok {
-			return nil, fmt.Errorf("Claude settings hooks.%s[].hooks must be an array", event)
+			return nil, fmt.Errorf("claude settings hooks.%s[].hooks must be an array", event)
 		}
 		remaining := make([]any, 0, len(commands))
 		for _, entry := range commands {
@@ -217,15 +212,15 @@ func writeSettings(path string, x map[string]any) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
-		return err
+	if mkdirErr := os.MkdirAll(filepath.Dir(path), 0700); mkdirErr != nil {
+		return mkdirErr
 	}
 	f, err := os.CreateTemp(filepath.Dir(path), ".settings.json.earwig-*")
 	if err != nil {
 		return err
 	}
 	tmp := f.Name()
-	defer os.Remove(tmp)
+	defer func() { _ = os.Remove(tmp) }()
 	if err = f.Chmod(0600); err == nil {
 		_, err = f.Write(append(b, '\n'))
 	}

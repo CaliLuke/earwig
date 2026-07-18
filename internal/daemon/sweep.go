@@ -2,16 +2,16 @@ package daemon
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
+	"log"
+	"time"
+
 	"github.com/CaliLuke/earwig/internal/config"
 	"github.com/CaliLuke/earwig/internal/exporter"
 	"github.com/CaliLuke/earwig/internal/normalizer"
 	"github.com/CaliLuke/earwig/internal/provider"
 	"github.com/CaliLuke/earwig/internal/spool"
-	"log"
-	"time"
 )
 
 type SweepOptions struct{ Session, Provider string }
@@ -114,7 +114,7 @@ func (s *Sweeper) claude(ctx context.Context, o SweepOptions, now time.Time) err
 				return e
 			}
 			if gapped {
-				_, _ = s.Spool.DB.Exec(`UPDATE sessions SET gap_warned=1 WHERE provider=? AND session_id=?`, t.Source, t.Session["id"])
+				_ = s.Spool.MarkGapWarned(t.Source, v.ID)
 			}
 		}
 	}
@@ -180,17 +180,21 @@ func (s *Sweeper) gap(t normalizer.Transcript) bool {
 		return false
 	}
 	sid, _ := t.Session["id"].(string)
-	var swept int64
-	err := s.Spool.DB.QueryRow(`SELECT last_swept_ms FROM sessions WHERE provider=? AND session_id=?`, t.Source, sid).Scan(&swept)
-	if errors.Is(err, sql.ErrNoRows) {
+	state, found, err := s.Spool.Session(t.Source, sid)
+	if !found {
 		return false
 	}
 	if err != nil {
 		s.note("gap_check_error_"+sid, err.Error())
 		return false
 	}
-	for _, v := range t.Session["compactions"].([]any) {
-		m := v.(map[string]any)
+	swept := state.LastSweptMS
+	compactions, _ := t.Session["compactions"].([]any)
+	for _, v := range compactions {
+		m, ok := v.(map[string]any)
+		if !ok {
+			continue
+		}
 		if normalizerMS(m["timestamp"]) > swept {
 			msg := fmt.Sprintf("GAP WARNING: Claude session %s compacted at %v after last sweep %d", sid, m["timestamp"], swept)
 			s.note("gap_"+sid, msg)
