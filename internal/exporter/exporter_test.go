@@ -122,14 +122,14 @@ func TestOpikMapsReviewFieldsAndPatchesConflict(t *testing.T) {
 	defer server.Close()
 
 	row := spool.Row{TraceUUID: "01900000-0000-7000-8000-000000000001", Provider: "claude-code-agent-sdk", SessionID: "session", TurnID: "turn-1", Status: "completed", Payload: string(payload), StartedMS: 1, CompletedMS: 2, CapturedMS: 3}
-	if err = (Opik{URL: server.URL, ProjectName: "autok-agent-evals"}).Export([]spool.Row{row}); err != nil {
+	if err = (Opik{URL: server.URL, ProjectName: "review-project"}).Export([]spool.Row{row}); err != nil {
 		t.Fatal(err)
 	}
 	if len(requests) != 2 || requests[0].method != http.MethodPost || requests[1].method != http.MethodPatch || requests[1].path != "/api/v1/private/traces/"+row.TraceUUID {
 		t.Fatalf("unexpected requests: %#v", requests)
 	}
 	for i, request := range requests {
-		if request.body["project_name"] != "autok-agent-evals" || request.body["input"] == nil || request.body["output"] == nil || request.body["metadata"] == nil {
+		if request.body["project_name"] != "review-project" || request.body["input"] == nil || request.body["output"] == nil || request.body["metadata"] == nil {
 			t.Fatalf("request %d missing mapped fields: %#v", i, request.body)
 		}
 	}
@@ -171,7 +171,7 @@ func TestOpikProjectMismatchIsPermanentAndActionable(t *testing.T) {
 	defer server.Close()
 	payload, _ := json.Marshal(spool.TurnPayload{Source: "claude-code-agent-sdk", Turn: normalizer.Turn{ID: "turn", Status: "completed"}})
 	err := (Opik{URL: server.URL, ProjectName: "earwig"}).Export([]spool.Row{{TraceUUID: "01900000-0000-7000-8000-000000000001", Provider: "claude-code-agent-sdk", SessionID: "session", Status: "completed", Payload: string(payload)}})
-	if err == nil || !isPermanent(err) || !strings.Contains(err.Error(), "opik_project") || !strings.Contains(err.Error(), "autok-agent-evals") {
+	if err == nil || !isPermanent(err) || !strings.Contains(err.Error(), "opik_project") || !strings.Contains(err.Error(), "different project") {
 		t.Fatalf("project mismatch was not actionable/permanent: %v", err)
 	}
 }

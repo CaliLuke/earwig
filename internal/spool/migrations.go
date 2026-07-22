@@ -73,7 +73,7 @@ func (s *Spool) migrateLegacyPayloads() error {
 }
 
 // migrateCodexTraceIDs converges rows captured by early Earwig versions with
-// Auto-K's native Codex turn UUID policy. Claude IDs remain deterministic
+// Earwig's native Codex turn UUID policy. Claude IDs remain deterministic
 // UUIDv7 values because its native message IDs are UUIDv4.
 func (s *Spool) migrateCodexTraceIDs() error {
 	var policy string

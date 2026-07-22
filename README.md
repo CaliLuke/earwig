@@ -1,8 +1,8 @@
 # Earwig
 
-Earwig is a local, always-on daemon that captures completed Codex and Claude
-Code turns, stores them durably in SQLite, and exports them to JSON files or
-[Opik](https://www.comet.com/docs/opik/).
+Earwig is a standalone, local, always-on daemon that captures completed Codex
+and Claude Code turns, stores them durably in SQLite, and exports them to JSON
+files or [Opik](https://www.comet.com/docs/opik/).
 
 Capture is independent of exporter availability: if Opik is unreachable,
 Earwig keeps the turns in its local spool and retries them on a later sweep.

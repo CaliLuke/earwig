@@ -43,7 +43,7 @@ V2 — Versioned capture-contract fixtures (`scripts/verify`)
 
 - Fixtures under `testdata/` are the versioned Earwig capture contract. A
   fixture change must accompany and explain the corresponding normalizer or
-  identity change; it is never regenerated from a downstream consumer.
+  identity change; it is never regenerated from a consuming application.
 - Go normalizer output is compared to the contract output as **full
   canonical JSON** (byte-identical after key-sorted marshaling), not sampled
   fields.

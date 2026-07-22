@@ -10,7 +10,7 @@ The name: an earwig is literally a bug, and "earwigging" is slang for
 eavesdropping. This is a small bug planted next to your agents, quietly
 getting the conversations on tape.
 
-Status: implemented; Auto-K consumes Earwig as its Codex/Claude capture layer.
+Status: implemented.
 
 Context and motivation
 ----------------------
@@ -23,11 +23,11 @@ a completed turn can become unrecoverable minutes after it finishes. Codex
 retains full history but still requires remembering to export. Human
 checkpoint discipline fails exactly when the work is most interesting.
 
-The first Auto-K eval prototype established a shared transcript shape and
-deterministic identity scheme. Earwig now owns that contract and moves capture
-out of human hands and out of the application repository: a standalone service
-with no Auto-K runtime or source dependency. Auto-K consumes Earwig's Opik
-output and must not maintain a second set of provider readers or normalizers.
+Earwig owns its transcript shape and deterministic identity scheme. It keeps
+capture out of human hands and separate from applications that consume its
+exports: a standalone service with no consumer runtime or source dependency.
+Evaluation systems can consume Earwig's Opik output without maintaining their
+own provider readers or normalizers.
 
 ### Goals
 
@@ -132,7 +132,7 @@ Contract fixtures: a JSON fixture set (raw provider payload → expected
 normalized transcript, including trace UUIDs) is checked into this repository.
 Tests require byte-identical canonical output. Changes to those fixtures are
 explicit capture-contract changes and must be reviewed with the normalizer;
-there is no downstream application implementation to regenerate them from.
+they are never regenerated from a consuming application.
 
 High-level behavior
 -------------------
@@ -236,11 +236,9 @@ check; failures mark the exporter `behind` and the sweep continues. Built-in:
   session ID and tags include `auto-checkpoint`, `inbox`, provider, and status.
   PATCH deliberately omits `name` and `tags`: once a trace exists, those are
   upstream-owned curation state and Earwig must not erase `promoted`, `kept`,
-  or another importer's review labels. For identity continuity with Auto-K,
-  configure `opik_project = "autok-agent-evals"`. It never adds anything to
-  annotation queues — curation
-  (promote/discard) is the consumer's job (for Auto-K, tooling in
-  autok-server's `agent-eval`; for others, the Opik UI).
+  or another importer's review labels. It never adds anything to annotation
+  queues — curation (promote/discard) belongs to the consuming workflow or the
+  Opik UI.
 - **jsondir** — writes normalized transcripts under a directory tree; the
   zero-infrastructure default for new users.
 
@@ -291,8 +289,8 @@ Error handling
 - **Permanent exporter row failure:** record the trace, payload hash, exporter
   target, and error; continue exporting later rows; keep the exporter visibly
   behind. The quarantined row retries automatically when its content changes
-  or exporter URL/project changes. Opik cross-project conflicts explicitly
-  direct Auto-K users to `autok-agent-evals`.
+  or exporter URL/project changes. Opik cross-project conflicts direct users
+  to configure the project that already owns the trace.
 - **Provider read failure:** skip that session, join the error into the sweep
   result, and surface it in health/status immediately. Its mtime checkpoint is
   not advanced, so the next trigger retries without a hot inner loop.
@@ -318,10 +316,10 @@ Staging
   conservative, first-run consent describing exactly what is captured and
   where it goes. Not started until A–C have weeks of real personal use.
 
-Auto-K integration (outside this repository): `autok-server` treats Earwig as
-the required Codex/Claude capture dependency, filters new Opik traces through
-the `inbox` tag, and owns review queues, promotion, datasets, and experiments.
-Its manual provider readers and normalizers have been retired.
+Consumer integration: downstream evaluation systems read Earwig's Opik output,
+filter new traces through the `inbox` tag, and own their review queues,
+promotion, datasets, and experiments. Earwig remains responsible only for
+capture, durable spooling, normalization, and export.
 
 Testing approach
 ----------------

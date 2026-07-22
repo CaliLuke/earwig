@@ -132,7 +132,7 @@ func (o Opik) Export(rows []spool.Row) error {
 				return e
 			}
 			if status == http.StatusConflict {
-				return permanentError{fmt.Errorf("Opik trace %s belongs to a different project; configure opik_project to match the existing trace (Auto-K uses autok-agent-evals): %s", r.TraceUUID, strings.TrimSpace(string(responseBody)))}
+				return permanentError{fmt.Errorf("Opik trace %s belongs to a different project; configure opik_project to match the project that already owns the trace: %s", r.TraceUUID, strings.TrimSpace(string(responseBody)))}
 			}
 		}
 		if status < 200 || status >= 300 {
