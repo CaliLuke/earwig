@@ -15,11 +15,11 @@ import (
 	"github.com/CaliLuke/earwig/internal/spool"
 )
 
-type redirectProbeTransport struct{ external atomic.Bool }
+type redirectProbeTransport struct{ remote atomic.Bool }
 
 func (p *redirectProbeTransport) RoundTrip(request *http.Request) (*http.Response, error) {
 	if request.URL.Hostname() != "127.0.0.1" {
-		p.external.Store(true)
+		p.remote.Store(true)
 		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(strings.NewReader("ok")), Request: request}, nil
 	}
 	response := &http.Response{StatusCode: http.StatusFound, Status: "302 Found", Header: make(http.Header), Body: io.NopCloser(strings.NewReader("redirect")), Request: request}
@@ -27,28 +27,41 @@ func (p *redirectProbeTransport) RoundTrip(request *http.Request) (*http.Respons
 	return response, nil
 }
 
-func TestLoopbackGuard(t *testing.T) {
-	if loopback("https://example.com") == nil {
-		t.Fatal("allowed remote URL")
-	}
-	if loopback("http://127.0.0.1:5173") != nil {
-		t.Fatal("rejected loopback")
+func TestOpikURLGuardAllowsNetworkHosts(t *testing.T) {
+	for _, endpoint := range []string{
+		"http://127.0.0.1:5173",
+		"http://100.64.0.10:5173",
+		"https://opik.homelab.ts.net",
+	} {
+		if err := validateOpikURL(endpoint); err != nil {
+			t.Errorf("rejected Opik endpoint %q: %v", endpoint, err)
+		}
 	}
 }
 
-func TestLoopbackGuardRejectsCredentialsAndExternalRedirects(t *testing.T) {
-	if loopback("http://user:secret@127.0.0.1:5173") == nil {
+func TestOpikURLGuardRejectsCredentialsAndInvalidSchemes(t *testing.T) {
+	if validateOpikURL("http://user:secret@127.0.0.1:5173") == nil {
 		t.Fatal("allowed credentialed URL")
 	}
-	probe := &redirectProbeTransport{}
-	err := (Opik{URL: "http://127.0.0.1:5173", Client: &http.Client{Transport: probe}}).Health()
-	if err == nil || !strings.Contains(err.Error(), "loopback") {
-		t.Fatalf("external redirect was not rejected: %v", err)
+	if validateOpikURL("ssh://opik.homelab.ts.net") == nil {
+		t.Fatal("allowed non-HTTP(S) URL")
 	}
-	if probe.external.Load() {
-		t.Fatal("client followed redirect to a non-loopback host")
+	if validateOpikURL("http:///missing-host") == nil {
+		t.Fatal("allowed URL without a host")
 	}
 }
+
+func TestOpikURLGuardAllowsRemoteRedirects(t *testing.T) {
+	probe := &redirectProbeTransport{}
+	err := (Opik{URL: "http://127.0.0.1:5173", Client: &http.Client{Transport: probe}}).Health()
+	if err != nil {
+		t.Fatalf("remote redirect was rejected: %v", err)
+	}
+	if !probe.remote.Load() {
+		t.Fatal("client did not follow redirect to the remote host")
+	}
+}
+
 func TestJSONDirIdempotentDrain(t *testing.T) {
 	s, e := spool.Open(filepath.Join(t.TempDir(), "s.sqlite"))
 	if e != nil {

@@ -10,7 +10,7 @@ The name: an earwig is literally a bug, and "earwigging" is slang for
 eavesdropping. This is a small bug planted next to your agents, quietly
 getting the conversations on tape.
 
-Status: approved design, not yet implemented.
+Status: implemented; Auto-K consumes Earwig as its Codex/Claude capture layer.
 
 Context and motivation
 ----------------------
@@ -23,11 +23,11 @@ a completed turn can become unrecoverable minutes after it finishes. Codex
 retains full history but still requires remembering to export. Human
 checkpoint discipline fails exactly when the work is most interesting.
 
-The upstream consumer (the Auto-K eval pipeline,
-`autok-server/tech_docs/0005`) already normalizes both providers into one
-canonical transcript contract with deterministic, idempotent IDs, imported
-manually. This project moves capture out of human hands and out of that repo:
-a standalone service with no Auto-K dependencies in its core.
+The first Auto-K eval prototype established a shared transcript shape and
+deterministic identity scheme. Earwig now owns that contract and moves capture
+out of human hands and out of the application repository: a standalone service
+with no Auto-K runtime or source dependency. Auto-K consumes Earwig's Opik
+output and must not maintain a second set of provider readers or normalizers.
 
 ### Goals
 
@@ -36,8 +36,8 @@ a standalone service with no Auto-K dependencies in its core.
 - Zero operator attention during work; curation happens afterwards, in the
   eval backend.
 - Capture never depends on any exporter being up.
-- Everything is local and non-billable: no model calls, no network egress
-  except loopback exporters.
+- Everything is non-billable: no model calls and no network egress except to
+  explicitly configured exporters.
 - Idle daemon footprint suitable for "always on": resident set under ~30 MB.
 - Distributable later: single `brew install`, `earwig install`, done.
 
@@ -48,7 +48,7 @@ a standalone service with no Auto-K dependencies in its core.
 - Parsing `~/.claude/projects/**/*.jsonl` or `$CODEX_HOME/sessions` content.
   File events and mtimes are trigger signals; file content is never read.
 - Capturing in-flight or user-interrupted turns.
-- Cloud sync, multi-user service, telemetry, or any non-loopback egress.
+- Cloud sync, multi-user service, telemetry, or unconfigured network egress.
 - Being an eval platform. Review, annotation, datasets, and experiments live
   in the backend (Opik); this tool captures and exports.
 
@@ -71,7 +71,7 @@ earwig (Go, resident)                    helpers (transient, per sweep)
 fs watchers (fsnotify, paths only)
 poll timers, debounce, serialization
 spool (SQLite via modernc.org/sqlite, no CGo)
-exporters (Opik loopback HTTP, JSON dir)
+exporters (Opik HTTP(S), JSON dir)
 health/state, gap detection            ──┬──▶  claude-reader: Node + pinned
 codex app-server JSON-RPC client         │     Agent SDK; list/read commands;
   (spawned subprocess, stdio)            │     JSON on stdout; exits when done
@@ -84,12 +84,10 @@ codex app-server JSON-RPC client         │     Agent SDK; list/read commands;
 - `claude-reader` is a small Node CLI with the pinned SDK: `list --dir <d>`
   and `read <session-id> --dir <d>`, emitting raw `SDKSessionInfo` /
   `SessionMessage[]` JSON. Normalization lives in Go so there is exactly one
-  canonical-transcript implementation. The reference for what the helper
-  reads and what normalization must produce is
-  `autok-server/evals/providers/claude-transcript{,-cli}.mjs`.
+  canonical-transcript implementation. Versioned raw and normalized contract
+  fixtures in `testdata/` guard the helper and normalizer boundary.
 - Codex needs no helper: app-server speaks JSON-RPC over stdio
   (`initialize`, `thread/list`, `thread/read`), which Go handles natively.
-  Reference: `autok-server/evals/providers/codex-thread.mjs`.
 - Distribution: the brew formula ships the Go binary plus the helper as a
   `bun compile` single-file binary (no Node runtime dependency for users).
   During development the helper runs via `node`. The default helper path is
@@ -102,26 +100,24 @@ codex app-server JSON-RPC client         │     Agent SDK; list/read commands;
 Canonical transcript contract
 -----------------------------
 
-Go re-implements, with cross-language fixture tests, the existing contract:
+Earwig owns one versioned provider-independent contract:
 
 - **Normalized transcript** `{schema_version: 1, source, capture, session,
   turns[]}` with turns
   `{id, status, started_at, completed_at, duration_ms, user_messages[],
   assistant_messages[] (kind: text|thinking), final_answer, trajectory[],
-  following_user_messages[], error}` — same shapes the Auto-K importers emit
-  (`autok-server/evals/providers/transcript-common.mjs` is normative).
+  following_user_messages[], error}`.
 - **Turn status:** `completed` (`end_turn`/`stop_sequence`), `failed`
   (`refusal`/`max_tokens`/`model_context_window_exceeded`), `interrupted`,
   `in_flight`. Only completed/failed are spooled.
 - **Trace IDs:** Claude uses deterministic UUIDv7 — 48-bit turn-start ms,
   version/variant bits, and 74 bits of SHA-256 over
-  `provider \x1f session_id \x1f turn_id` (normative reference:
-  `_deterministic_uuid7` in Auto-K, including its UTC rule for naive
-  timestamps). Codex uses the native turn UUIDv7, matching Auto-K's importer;
+  `provider \x1f session_id \x1f turn_id`, including a UTC rule for naive
+  timestamps. Codex uses the native turn UUIDv7;
   synthetic/non-UUIDv7 fixture IDs fall back to the deterministic scheme.
-  This deliberate split preserves identity continuity with Auto-K for both
-  providers. Opening an older spool migrates hashed Codex rows to native IDs
-  and requeues them once under the compatible identity.
+  This deliberate split preserves identity continuity with previously captured
+  traces. Opening an older spool migrates hashed Codex rows to native IDs and
+  requeues them once under the compatible identity.
 - **Capture policy:** full fidelity (thinking, tool arguments/results,
   file contents) with secret-pattern redaction inside command text and binary
   payloads replaced by placeholders; policy is stamped into every transcript
@@ -132,11 +128,11 @@ Go re-implements, with cross-language fixture tests, the existing contract:
   Synthetic user inputs (command echoes, task notifications, interrupt
   markers) are flagged and excluded from redirect evidence.
 
-Fixture parity: a shared JSON fixture set (raw provider payload → expected
-normalized transcript, including trace UUIDs) is checked into this repo and
-must produce byte-identical normalized output to the autok-server Node
-normalizers at adoption time. This is the guard against divergence while both
-implementations exist.
+Contract fixtures: a JSON fixture set (raw provider payload → expected
+normalized transcript, including trace UUIDs) is checked into this repository.
+Tests require byte-identical canonical output. Changes to those fixtures are
+explicit capture-contract changes and must be reviewed with the normalizer;
+there is no downstream application implementation to regenerate them from.
 
 High-level behavior
 -------------------
@@ -228,7 +224,10 @@ Exporters
 An exporter is a Go interface: `Export(batch []Turn) error` plus a health
 check; failures mark the exporter `behind` and the sweep continues. Built-in:
 
-- **opik** — loopback-only URL guard; creates traces by stable ID and, on the
+- **opik** — accepts local or remote HTTP(S) endpoints, including Tailscale IP
+  and MagicDNS names, while rejecting embedded URL credentials and unsupported
+  schemes. For example, `opik_url = "http://opik.my-tailnet.ts.net:5173"`.
+  It creates traces by stable ID and, on the
   pinned Opik 2.1.31 duplicate-ID conflict, updates them through
   `PATCH /traces/{id}`. User messages map to Opik `input`; assistant messages
   and final answer map to `output`; trajectory, redirect evidence, capture
@@ -319,10 +318,10 @@ Staging
   conservative, first-run consent describing exactly what is captured and
   where it goes. Not started until A–C have weeks of real personal use.
 
-Auto-K integration (outside this repo): autok-server's `agent-eval` gains
-promote/discard/queue tooling over the `inbox` tag and retires its manual
-import path in favor of this service once stage B is trusted. Its
-`tech_docs/0005` records that decision when it happens.
+Auto-K integration (outside this repository): `autok-server` treats Earwig as
+the required Codex/Claude capture dependency, filters new Opik traces through
+the `inbox` tag, and owns review queues, promotion, datasets, and experiments.
+Its manual provider readers and normalizers have been retired.
 
 Testing approach
 ----------------
@@ -332,9 +331,9 @@ change must pass `scripts/verify` (hermetic) and `scripts/verify-live`
 (local integration), and completion reports must include their output. The
 notes below describe the intent behind those suites.
 
-- **Go unit:** byte-identical canonical normalization against generated Auto-K
-  reference fixtures, generated Python UUID vectors (including both Codex
-  identity paths), sweep planning, spool migrations/upsert/rehash, the gap
+- **Go unit:** byte-identical canonical normalization against versioned contract
+  fixtures and UUID vectors (including both Codex identity paths), sweep
+  planning, spool migrations/upsert/rehash, the gap
   predicate, hook state safety, lock contention, and exporter row isolation.
 - **Helper unit (Node):** list/read JSON contract plus a hermetic end-to-end
   sweep through the pinned SDK over a redacted recorded JSONL session in an

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -42,7 +41,7 @@ func (o Opik) httpClient(timeout time.Duration) *http.Client {
 	}
 	previousRedirectCheck := client.CheckRedirect
 	client.CheckRedirect = func(request *http.Request, via []*http.Request) error {
-		if err := loopback(request.URL.String()); err != nil {
+		if err := validateOpikURL(request.URL.String()); err != nil {
 			return fmt.Errorf("reject Opik redirect: %w", err)
 		}
 		if previousRedirectCheck != nil {
@@ -56,7 +55,7 @@ func (o Opik) httpClient(timeout time.Duration) *http.Client {
 	return &client
 }
 
-func loopback(raw string) error {
+func validateOpikURL(raw string) error {
 	u, e := url.Parse(raw)
 	if e != nil {
 		return e
@@ -67,19 +66,14 @@ func loopback(raw string) error {
 	if u.User != nil {
 		return fmt.Errorf("exporter URL must not contain credentials")
 	}
-	h := u.Hostname()
-	if h == "localhost" {
-		return nil
-	}
-	ip := net.ParseIP(h)
-	if ip == nil || !ip.IsLoopback() {
-		return fmt.Errorf("exporter URL must be loopback")
+	if u.Hostname() == "" {
+		return fmt.Errorf("exporter URL must contain a host")
 	}
 	return nil
 }
 
 func (o Opik) Health() error {
-	if e := loopback(o.URL); e != nil {
+	if e := validateOpikURL(o.URL); e != nil {
 		return e
 	}
 	c := o.httpClient(5 * time.Second)
@@ -95,7 +89,7 @@ func (o Opik) Health() error {
 }
 
 func (o Opik) Export(rows []spool.Row) error {
-	if e := loopback(o.URL); e != nil {
+	if e := validateOpikURL(o.URL); e != nil {
 		return e
 	}
 	c := o.httpClient(15 * time.Second)
@@ -179,7 +173,7 @@ func (o Opik) request(client *http.Client, method, path string, body any) (int, 
 // Prune treats lookup failures as fatal so local evidence is never deleted
 // when upstream retention state cannot be verified.
 func (o Opik) ProtectedTraceIDs(ids []string) (map[string]bool, error) {
-	if err := loopback(o.URL); err != nil {
+	if err := validateOpikURL(o.URL); err != nil {
 		return nil, err
 	}
 	client := o.httpClient(15 * time.Second)

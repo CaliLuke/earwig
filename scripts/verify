@@ -137,14 +137,12 @@ go test -race ./...
 npm test --prefix helpers/claude-reader
 node scripts/check-helper-pin.mjs
 
-section 'V2 generated reference parity'
+section 'V2 versioned capture-contract fixtures'
 test -s testdata/generated/normalized.json
 test -s testdata/generated/trace-id-vectors.json
-test -x scripts/generate-reference-fixtures.mjs
-test -x scripts/reference_uuid_vectors.py
 go test -v ./internal/normalizer -run 'TestFixtureParity|TestDeterministicTraceIDReferenceVectors'
 go test -v ./internal/spool -run 'TestCodexTraceIdentityReferenceVectors'
-printf 'PASS generated Auto-K canonical fixtures and trace-ID vectors\n'
+printf 'PASS versioned Earwig canonical fixtures and trace-ID vectors\n'
 
 section 'V3 hermetic end-to-end'
 go test -v ./internal/daemon -run 'TestHermeticClaudeSDKEndToEnd|TestClaudeSweepReadsOnlyNewOrChangedSessions|TestGapDetectionExemptsFirstSeenSession'
@@ -153,7 +151,7 @@ printf 'PASS hermetic provider, planner, gap, and migration checks\n'
 
 section 'V6 user-state safety invariants'
 go test -v ./internal/hooks -run 'TestInstallRemoveRoundTripIsByteIdentical|TestInstallMergesAndRemoveIsSurgical|TestInvalidSettingsAreRefusedWithoutWrites|TestPublicSettingsPathCanBeConfinedToFixtureHome'
-go test -v ./internal/exporter -run 'TestLoopbackGuard'
+go test -v ./internal/exporter -run 'TestOpikURLGuard'
 unsafe_access=$(rg -n 'os\.(Open|ReadFile)\([^\n]*(\.claude|projects|sessions)|bufio\.[A-Za-z]+\([^\n]*(\.claude|projects|sessions)' cmd internal --glob '*.go' --glob '!internal/daemon/watch.go' || true)
 if [ -n "$unsafe_access" ]; then
   printf 'unsupported direct provider storage access:\n%s\n' "$unsafe_access"

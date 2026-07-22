@@ -16,9 +16,9 @@ Rules
 2. All checks are wired into exactly two entry points:
    - `scripts/verify` — hermetic. No network, no real user directories, no
      Opik, no provider binaries required. Runs everywhere, always.
-   - `scripts/verify-live` — local integration. May use loopback Opik and
-     real on-disk sessions read-only. Must use an isolated spool file and a
-     dedicated Opik project. Must never start a model conversation or bill
+   - `scripts/verify-live` — integration against the configured Opik endpoint
+     and real on-disk sessions read-only. Must use an isolated spool file and
+     a dedicated Opik project. Must never start a model conversation or bill
      anything. Skips cleanly (with an explicit SKIP line per item) when a
      dependency is down.
 3. A skipped item is a blocker for claiming a stage complete unless the user
@@ -38,20 +38,18 @@ V1 — Static gates (`scripts/verify`)
   `@anthropic-ai/claude-agent-sdk` exactly (no `^`/`~`);
   `package-lock.json` agrees with the pin.
 
-V2 — Reference parity, generated never hand-written (`scripts/verify`)
-----------------------------------------------------------------------
+V2 — Versioned capture-contract fixtures (`scripts/verify`)
+-----------------------------------------------------------
 
-- Fixtures under `testdata/` are produced by a checked-in generator script
-  that runs the reference implementations — the autok-server Node
-  normalizers and the Python `_deterministic_uuid7` — over recorded raw
-  provider payloads. Hand-edited expected output is prohibited; regeneration
-  is reproducible and documented in the generator header.
-- Go normalizer output is compared to the reference output as **full
+- Fixtures under `testdata/` are the versioned Earwig capture contract. A
+  fixture change must accompany and explain the corresponding normalizer or
+  identity change; it is never regenerated from a downstream consumer.
+- Go normalizer output is compared to the contract output as **full
   canonical JSON** (byte-identical after key-sorted marshaling), not sampled
   fields.
 - Trace-ID vector table: at least 10 `(timestamp, provider, session, turn)`
   tuples, including naive timestamps, negative timestamps, and unicode turn
-  IDs. Go must match the Python reference on every vector.
+  IDs. Go must match every checked-in vector.
 - Codex IDs: native UUIDv7 turn IDs pass through unchanged; non-UUIDv7 IDs
   fall back to the deterministic scheme; both paths covered by vectors.
 
@@ -87,7 +85,7 @@ V4 — Live Opik integration (`scripts/verify-live`)
   different Opik project. The drain must export every other row, mark the
   poisoned row failed with a project-mismatch message visible in `status`,
   and never abort the batch.
-- Exporter down (`opik_url` pointing at a closed loopback port): the sweep
+- Exporter down (`opik_url` pointing at a closed port): the sweep
   still captures to the spool and exits 0; `status` reports behind and exits
   1; after restoring the URL, one sweep drains the backlog with no
   duplicates.
@@ -131,9 +129,9 @@ V6 — User-state safety invariants (`scripts/verify`, fixture copies only)
   `os.Open`/`os.ReadFile`/`bufio` usage on paths containing
   `.claude/projects` or `sessions` outside the fsnotify watch-registration
   code, and fails on any match.
-- Loopback tripwire: exporter URL validation rejects non-loopback hosts,
-  credentialed URLs, and redirects to non-loopback targets (tested with an
-  `httptest` server that 302s outward).
+- Opik URL tripwire: exporter URL validation accepts loopback, Tailscale IP,
+  and MagicDNS hosts, follows valid remote redirects, and rejects credentialed
+  URLs, missing hosts, and unsupported schemes.
 
 V7 — Reporting discipline
 -------------------------
