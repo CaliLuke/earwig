@@ -1,0 +1,9 @@
+#!/bin/sh
+set -eu
+
+go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
+go install golang.org/x/tools/cmd/goimports@v0.48.0
+go install golang.org/x/tools/cmd/deadcode@v0.48.0
+go install github.com/mibk/dupl@v1.1.0
+go install github.com/fzipp/gocyclo/cmd/gocyclo@v0.6.0
+go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12

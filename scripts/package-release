@@ -1,0 +1,66 @@
+#!/bin/sh
+set -eu
+
+repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+cd "$repo_root"
+
+version=${1:-}
+if ! printf '%s\n' "$version" | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'; then
+	printf 'usage: %s vMAJOR.MINOR.PATCH\n' "$0" >&2
+	exit 2
+fi
+
+for tool in go bun npm tar; do
+	if ! command -v "$tool" >/dev/null 2>&1; then
+		printf 'missing release tool: %s\n' "$tool" >&2
+		exit 1
+	fi
+done
+if [ ! -d helpers/claude-reader/node_modules ]; then
+	printf 'helper dependencies are missing; run: npm ci --prefix helpers/claude-reader\n' >&2
+	exit 1
+fi
+
+os=$(go env GOHOSTOS)
+arch=$(go env GOHOSTARCH)
+case "$os/$arch" in
+	darwin/amd64|darwin/arm64|linux/amd64|linux/arm64) ;;
+	*) printf 'unsupported release target: %s/%s\n' "$os" "$arch" >&2; exit 1 ;;
+esac
+
+version_number=${version#v}
+artifact="earwig_${version_number}_${os}_${arch}.tar.gz"
+commit=$(git rev-parse HEAD)
+build_date=$(git show -s --format=%cI HEAD)
+tmp_base=$(CDPATH= cd -- "${TMPDIR:-/tmp}" && pwd -P)
+release_tmp=$(mktemp -d "$tmp_base/earwig-package.XXXXXX")
+cleanup() {
+	case "$release_tmp" in
+		"$tmp_base"/earwig-package.*) rm -rf -- "$release_tmp" ;;
+		*) printf 'refusing to clean unexpected temp path %s\n' "$release_tmp" >&2 ;;
+	esac
+}
+trap cleanup EXIT INT TERM
+
+stage="$release_tmp/earwig_$version_number"
+mkdir -p "$stage" dist
+ldflags="-s -w -X main.version=$version -X main.commit=$commit -X main.buildDate=$build_date"
+CGO_ENABLED=0 go build -trimpath -ldflags "$ldflags" -o "$stage/earwig" ./cmd/earwig
+bun build --compile --minify --no-compile-autoload-dotenv --no-compile-autoload-bunfig \
+	--outfile "$stage/claude-reader" helpers/claude-reader/index.mjs
+cp README.md DESIGN.md VALIDATION.md "$stage/"
+if [ -f LICENSE ]; then
+	cp LICENSE "$stage/"
+fi
+
+"$stage/earwig" version | grep -F "$version" >/dev/null
+mkdir -p "$release_tmp/empty-claude-config"
+CLAUDE_CONFIG_DIR="$release_tmp/empty-claude-config" "$stage/claude-reader" list >/dev/null
+
+tar -czf "dist/$artifact" -C "$release_tmp" "earwig_$version_number"
+if command -v sha256sum >/dev/null 2>&1; then
+	(cd dist && sha256sum "$artifact" > "$artifact.sha256")
+else
+	(cd dist && shasum -a 256 "$artifact" > "$artifact.sha256")
+fi
+printf '%s\n' "dist/$artifact"

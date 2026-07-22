@@ -81,11 +81,15 @@ codex app-server JSON-RPC client         │     Agent SDK; list/read commands;
 
 - The Go daemon idles with watchers and timers only. Helpers exist solely
   during a sweep, so background memory stays at the Go baseline.
-- `claude-reader` is a small Node CLI with the pinned SDK: `list --dir <d>`
-  and `read <session-id> --dir <d>`, emitting raw `SDKSessionInfo` /
-  `SessionMessage[]` JSON. Normalization lives in Go so there is exactly one
-  canonical-transcript implementation. Versioned raw and normalized contract
-  fixtures in `testdata/` guard the helper and normalizer boundary.
+- `claude-reader` is a small Node CLI with the pinned SDK (currently 0.3.217):
+  paginated `list` across all projects and `read <session-id> --dir <d>`,
+  emitting raw `SDKSessionInfo` / `SessionMessage[]` JSON. Normalization lives
+  in Go so there is exactly one canonical-transcript implementation.
+  Versioned raw and normalized contract fixtures in `testdata/` guard the
+  helper and normalizer boundary. The helper-local npm policy omits SDK peer
+  packages used only by optional MCP-construction APIs; Earwig's bundled
+  session APIs are exercised through the hermetic end-to-end suite after every
+  clean `npm ci`.
 - Codex needs no helper: app-server speaks JSON-RPC over stdio
   (`initialize`, `thread/list`, `thread/read`), which Go handles natively.
 - Distribution: the brew formula ships the Go binary plus the helper as a
@@ -139,9 +143,11 @@ High-level behavior
 
 A **sweep** is the only unit of work; every trigger funnels into it:
 
-1. List sessions per provider; keep those whose recorded cwd matches a
-   watched workspace root and whose `last_modified` exceeds the spool's
-   record.
+1. List sessions globally and exhaust provider pagination, then keep those
+   whose recorded cwd is equal to or nested beneath a watched workspace root
+   and whose `last_modified` exceeds the spool's record. Provider-side cwd
+   filters are deliberately not used because both providers define them as
+   exact-project filters rather than recursive workspace-root filters.
 2. Read changed sessions through the supported interfaces (helper /
    app-server), normalize, and upsert completed/failed turns into the spool
    keyed by trace UUID. Content hash decides whether an existing row is
@@ -261,10 +267,14 @@ Commands and process model
   OS advisory lock next to the spool (second invocation exits 2 with holder
   PID; lock ownership is released automatically if the process dies).
 - `earwig install` / `uninstall` — launchd agent (`KeepAlive`,
-  `RunAtLoad`) after printing the plist and confirming. The plist carries an
-  absolute program path, working directory, and install-time `PATH` so the
-  helper, `node` (development), and `codex` resolve under launchd. Linux/systemd
-  is a later stage.
+  `RunAtLoad`) or Linux systemd user service after printing the definition and
+  confirming. Both carry an absolute program path, working directory, and
+  install-time `PATH` so the helper, `node` (development), and `codex` resolve
+  in the service environment.
+- `earwig doctor` — preflight the platform, config, roots, helper, provider
+  commands, and output paths without opening or changing the spool.
+- `earwig version` — report version, source commit, and build timestamp from
+  release-time linker metadata.
 - `earwig status` — running state, last poll, last successful sweep,
   sessions tracked, turns captured (total / 24 h), exporter lag, compactions
   observed, gap warnings. Exit 1 when behind or gapped.
@@ -311,10 +321,16 @@ Staging
 - **Stage B — daemon:** `watch`, lock, fsnotify triggers, polls, startup
   catch-up, `status`/`stop`, launchd `install`, gap predicate.
 - **Stage C — hooks:** `hooks install/remove`, `PreCompact`-driven sweeps.
-- **Stage D — distribution:** bun-compiled helper, brew formula, Linux
-  support, and the public-default flip: secret redaction on, capture policy
-  conservative, first-run consent describing exactly what is captured and
-  where it goes. Not started until A–C have weeks of real personal use.
+- **Stage D — distribution:** complete in the repository. Tagged releases
+  build native macOS/Linux `amd64` and `arm64` archives with a Bun-compiled
+  helper, SHA-256 checksums, provenance attestations, and a generated Homebrew
+  formula. CI verifies source and package smoke tests; release tags additionally
+  run dependency audits. `doctor`, version metadata, launchd, and systemd user
+  services cover installation diagnostics and lifecycle. The full-fidelity
+  capture default is deliberate for this tool; install docs disclose the
+  capture and storage scope and explain how to narrow it. A public release
+  uses the MIT License; automatic tap updates require the optional tap-update
+  credential.
 
 Consumer integration: downstream evaluation systems read Earwig's Opik output,
 filter new traces through the `inbox` tag, and own their review queues,

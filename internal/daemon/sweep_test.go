@@ -17,23 +17,32 @@ import (
 
 func TestClaudeSweepReadsOnlyNewOrChangedSessions(t *testing.T) {
 	dir := t.TempDir()
+	workspace := filepath.Join(dir, "projects", "nested")
+	if err := os.MkdirAll(workspace, 0700); err != nil {
+		t.Fatal(err)
+	}
 	mtimePath := filepath.Join(dir, "mtime")
 	logPath := filepath.Join(dir, "reads")
 	helperPath := filepath.Join(dir, "claude-helper")
 	if err := os.WriteFile(mtimePath, []byte("100\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	rootJSON, _ := json.Marshal(dir)
+	workspaceJSON, _ := json.Marshal(workspace)
 	const sessionID = "0aaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+	const outsideSessionID = "0fffffff-bbbb-4ccc-8ddd-eeeeeeeeeeee"
 	script := fmt.Sprintf(`#!/bin/sh
 mtime=$(sed -n '1p' %q)
 if [ "$1" = "list" ]; then
-  printf '[{"id":"%s","cwd":%s,"last_modified":%%s}]\n' "$mtime"
+	if [ "$#" -ne 1 ]; then
+		echo "list must enumerate globally" >&2
+		exit 3
+	fi
+	printf '[{"id":"%s","cwd":%s,"last_modified":%%s},{"id":"%s","cwd":"/outside","last_modified":%%s}]\n' "$mtime" "$mtime"
   exit 0
 fi
 printf 'read\n' >> %q
 printf '{"info":{"sessionId":"%s","cwd":%s,"createdAt":1,"lastModified":%%s},"messages":[]}\n' "$mtime"
-`, mtimePath, sessionID, rootJSON, logPath, sessionID, rootJSON)
+`, mtimePath, sessionID, workspaceJSON, outsideSessionID, logPath, sessionID, workspaceJSON)
 	if err := os.WriteFile(helperPath, []byte(script), 0700); err != nil {
 		t.Fatal(err)
 	}

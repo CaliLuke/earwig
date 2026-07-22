@@ -7,7 +7,34 @@ files or [Opik](https://www.comet.com/docs/opik/).
 Capture is independent of exporter availability: if Opik is unreachable,
 Earwig keeps the turns in its local spool and retries them on a later sweep.
 
+## Install
+
+Release bundles contain both Earwig and its compiled Claude reader, so Node.js
+is not required at runtime. On macOS or Linux, install with Homebrew:
+
+```sh
+brew tap caliluke/tap
+brew install earwig
+earwig doctor
+brew services start earwig
+```
+
+Alternatively, download the archive for your OS and architecture from the
+[GitHub releases page](https://github.com/CaliLuke/earwig/releases), verify it
+against the adjacent `.sha256` file, and put both `earwig` and
+`claude-reader` in the same directory. Then run `earwig doctor` followed by
+`earwig install`; the latter previews and confirms a launchd user agent on
+macOS or a systemd user service on Linux.
+
+Earwig intentionally captures full conversation and tool-use content by
+default. Its default workspace root is your home directory and its default
+JSON and SQLite outputs are under `~/.local/share/earwig`. Narrow
+`workspace_roots`, disable an exporter, or change the output paths in
+`~/.config/earwig/config.toml` before starting the service if desired.
+
 ## Build and run
+
+Building from source requires Go 1.26.5 or newer and Node.js 18 or newer.
 
 ```sh
 npm ci --prefix helpers/claude-reader
@@ -16,9 +43,13 @@ go build -o earwig ./cmd/earwig
 ./earwig status
 ```
 
-Run `./earwig watch` for a foreground daemon. On macOS, `./earwig install`
-can install it as a launchd agent after showing the generated configuration
-and asking for confirmation.
+Run the hermetic quality gates with `./scripts/verify`. Before a release, run
+the network-dependent dependency checks with `./scripts/verify-security` and
+the local integration suite with `./scripts/verify-live`.
+
+Run `./earwig watch` for a foreground daemon. On macOS and Linux,
+`./earwig install` can install it as a user service after showing the generated
+configuration and asking for confirmation.
 
 Earwig reads configuration from `~/.config/earwig/config.toml`. A missing
 configuration file is valid and uses local defaults.
@@ -74,7 +105,15 @@ responsibility.
 - `earwig hooks install|remove` manages Claude pre-compaction hooks.
 - `earwig prune --older-than <duration>` removes old, unprotected turns.
 - `earwig export --dir <path>` exports captured turns to JSON files.
-- `earwig install|uninstall` manages the macOS launchd agent.
+- `earwig install|uninstall` manages the macOS launchd or Linux systemd user
+  service.
+- `earwig doctor` checks configuration, paths, and provider dependencies.
+- `earwig version` prints release build metadata.
 
-See [DESIGN.md](DESIGN.md) for architecture and behavior, and
-[VALIDATION.md](VALIDATION.md) for the test contract.
+See [DESIGN.md](DESIGN.md) for architecture and behavior,
+[VALIDATION.md](VALIDATION.md) for the test contract, and
+[RELEASING.md](RELEASING.md) for maintainer release steps.
+
+## License
+
+Earwig is available under the [MIT License](LICENSE).

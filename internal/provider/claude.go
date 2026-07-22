@@ -19,7 +19,7 @@ type ClaudeReader struct{ Helper string }
 
 func (r ClaudeReader) command(ctx context.Context, args ...string) ([]byte, error) {
 	if r.Helper == "" {
-		return nil, fmt.Errorf("claude helper missing: configure claude_helper (expected SDK 0.3.212)")
+		return nil, fmt.Errorf("claude helper missing: configure claude_helper (expected SDK 0.3.217)")
 	}
 	var c *exec.Cmd
 	if filepath.Ext(r.Helper) == ".mjs" {
@@ -33,8 +33,8 @@ func (r ClaudeReader) command(ctx context.Context, args ...string) ([]byte, erro
 	}
 	return b, err
 }
-func (r ClaudeReader) List(ctx context.Context, dir string) ([]ClaudeSession, error) {
-	b, e := r.command(ctx, "list", "--dir", dir)
+func (r ClaudeReader) List(ctx context.Context) ([]ClaudeSession, error) {
+	b, e := r.command(ctx, "list")
 	if e != nil {
 		return nil, e
 	}

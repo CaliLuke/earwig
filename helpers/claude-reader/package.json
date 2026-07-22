@@ -1,7 +1,8 @@
 {
   "name": "earwig-claude-reader",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "scripts": { "test": "node --test test.mjs" },
-  "dependencies": { "@anthropic-ai/claude-agent-sdk": "0.3.212" }
+  "dependencies": { "@anthropic-ai/claude-agent-sdk": "0.3.217" }
 }

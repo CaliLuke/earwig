@@ -1,0 +1,54 @@
+#!/bin/sh
+set -eu
+
+repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+cd "$repo_root"
+
+version=v0.0.0
+os=$(go env GOHOSTOS)
+arch=$(go env GOHOSTARCH)
+artifact="earwig_0.0.0_${os}_${arch}.tar.gz"
+./scripts/package-release "$version" >/dev/null
+
+(cd dist && if command -v sha256sum >/dev/null 2>&1; then
+	sha256sum -c "$artifact.sha256"
+else
+	shasum -a 256 -c "$artifact.sha256"
+fi)
+
+tmp_base=$(CDPATH= cd -- "${TMPDIR:-/tmp}" && pwd -P)
+distribution_tmp=$(mktemp -d "$tmp_base/earwig-distribution.XXXXXX")
+cleanup() {
+	case "$distribution_tmp" in
+		"$tmp_base"/earwig-distribution.*) rm -rf -- "$distribution_tmp" ;;
+		*) printf 'refusing to clean unexpected temp path %s\n' "$distribution_tmp" >&2 ;;
+	esac
+}
+trap cleanup EXIT INT TERM
+
+tar -xzf "dist/$artifact" -C "$distribution_tmp"
+package_dir="$distribution_tmp/earwig_0.0.0"
+test -f "$package_dir/LICENSE"
+"$package_dir/earwig" version | grep -F "$version" >/dev/null
+mkdir -p "$distribution_tmp/workspace"
+claude_config="$distribution_tmp/claude-config"
+project_key=$(printf '%s' "$distribution_tmp/workspace" | sed 's/[^a-zA-Z0-9]/-/g')
+mkdir -p "$claude_config/projects/$project_key"
+sed "s|__WORKSPACE__|$distribution_tmp/workspace|g" testdata/provider/claude-session.jsonl \
+	> "$claude_config/projects/$project_key/0aaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee.jsonl"
+CLAUDE_CONFIG_DIR="$claude_config" "$package_dir/claude-reader" list | grep -F '0aaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee' >/dev/null
+CLAUDE_CONFIG_DIR="$claude_config" "$package_dir/claude-reader" read \
+	0aaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee --dir "$distribution_tmp/workspace" \
+	| grep -F 'assistant' >/dev/null
+config_path="$distribution_tmp/config.toml"
+printf 'workspace_roots = [%s]\nclaude = true\ncodex = false\nspool_path = %s\njsondir = %s\n' \
+	"\"$distribution_tmp/workspace\"" "\"$distribution_tmp/spool.sqlite\"" "\"$distribution_tmp/json\"" > "$config_path"
+EARWIG_CONFIG="$config_path" "$package_dir/earwig" doctor | grep -Fx ready >/dev/null
+
+checksums="$distribution_tmp/checksums.txt"
+for target in darwin_amd64 darwin_arm64 linux_amd64 linux_arm64; do
+	printf '%064d  earwig_0.0.0_%s.tar.gz\n' 0 "$target" >> "$checksums"
+done
+./scripts/render-homebrew-formula "$version" "$checksums" > "$distribution_tmp/earwig.rb"
+ruby -c "$distribution_tmp/earwig.rb" >/dev/null
+printf 'VERIFY-DISTRIBUTION PASS (%s/%s)\n' "$os" "$arch"

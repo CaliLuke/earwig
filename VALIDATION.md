@@ -13,7 +13,7 @@ Rules
 1. **Meta-rule:** when any new defect is found, first reproduce it as a
    failing check in one of these suites, then fix it. A fix without a
    permanent check does not count as fixed.
-2. All checks are wired into exactly two entry points:
+2. Hermetic and live behavioral checks are wired into two entry points:
    - `scripts/verify` — hermetic. No network, no real user directories, no
      Opik, no provider binaries required. Runs everywhere, always.
    - `scripts/verify-live` — integration against the configured Opik endpoint
@@ -21,6 +21,9 @@ Rules
      a dedicated Opik project. Must never start a model conversation or bill
      anything. Skips cleanly (with an explicit SKIP line per item) when a
      dependency is down.
+   Release dependency checks are wired into `scripts/verify-security`. This
+   third entry point is network-dependent by design and runs before releases,
+   not in the offline commit gate.
 3. A skipped item is a blocker for claiming a stage complete unless the user
    explicitly waives it.
 4. Completion reports paste the full output of both scripts, the measured
@@ -31,6 +34,7 @@ V1 — Static gates (`scripts/verify`)
 ------------------------------------
 
 - `gofmt -l .` output is empty.
+- `actionlint` accepts every GitHub Actions workflow.
 - `go vet ./...` is clean.
 - `go test ./...` passes.
 - `go test -race ./...` passes.
@@ -63,9 +67,11 @@ V3 — Hermetic end-to-end (`scripts/verify`)
 - Gap predicate, end-to-end truth table: a compaction occurring after a
   prior successful sweep of that session produces exactly one warning; the
   first-ever sweep of an already-compacted session produces zero.
-- Planner: a second sweep with unchanged mtimes performs **zero provider
-  reads** (asserted via a helper invocation counter); touching one session
-  produces exactly one read.
+- Planner: provider listing is global and paginated, a session nested beneath
+  a workspace root is included, and sessions outside every root are excluded.
+  A second sweep with unchanged mtimes performs **zero provider reads**
+  (asserted via a helper invocation counter); touching one session produces
+  exactly one read.
 - Spool migrations: opening a spool seeded with legacy whole-transcript rows
   and legacy hashed-Codex rows converts both; opening it a second time is a
   no-op (idempotent).
@@ -142,3 +148,25 @@ Every completion report includes:
 - the measured idle RSS figure;
 - each skipped item with its reason;
 - any `DESIGN.md` changes made in the same pass.
+
+V8 — Release dependency audit (`scripts/verify-security`)
+---------------------------------------------------------
+
+- Run `govulncheck` with the installed binary when available, otherwise with
+  the pinned `golang.org/x/vuln/cmd/govulncheck@v1.6.0` fallback.
+- Run `npm audit --omit=dev` against the pinned Claude helper lockfile.
+- Both scans must report zero actionable vulnerabilities before release.
+
+V9 — Distribution smoke test (`scripts/verify-distribution`)
+------------------------------------------------------------
+
+- Build the current native archive with release linker metadata and a
+  Bun-compiled, standalone Claude reader.
+- Verify the archive checksum, extract it into an isolated directory, and run
+  the packaged `version`, helper `list`/`read`, and `doctor` commands without
+  relying on repository-relative paths.
+- Render the four-platform Homebrew formula from synthetic checksums and check
+  its Ruby syntax.
+- CI runs this check on Linux. The tagged release workflow builds and smoke
+  tests all four supported native OS/architecture combinations, then publishes
+  only after hermetic verification and dependency audits succeed.

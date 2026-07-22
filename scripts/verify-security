@@ -1,0 +1,20 @@
+#!/bin/sh
+set -eu
+
+repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+cd "$repo_root"
+
+section() { printf '\n=== %s ===\n' "$1"; }
+
+section 'Go vulnerability reachability'
+printf 'toolchain: %s\n' "$(go env GOVERSION)"
+if command -v govulncheck >/dev/null 2>&1; then
+	govulncheck ./...
+else
+	go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
+fi
+
+section 'Claude helper dependency audit'
+npm audit --omit=dev --prefix helpers/claude-reader
+
+printf '\nVERIFY-SECURITY PASS\n'

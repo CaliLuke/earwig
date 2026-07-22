@@ -40,12 +40,14 @@ restore_module_files() {
 }
 
 section 'Quality gates'
-for tool in go goimports golangci-lint deadcode dupl gocyclo; do
+for tool in go goimports golangci-lint deadcode dupl gocyclo actionlint; do
   require_tool "$tool"
 done
 
 go build ./...
 printf 'PASS go build ./...\n'
+actionlint
+printf 'PASS actionlint\n'
 
 package_dirs=$(go list -f '{{.Dir}}' ./... | tr '\n' ' ')
 if [ "$fix" = '--fix' ]; then

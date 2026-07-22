@@ -102,12 +102,31 @@ func (x *CodexClient) notify(method string, params any) {
 	default:
 	}
 }
-func (x *CodexClient) List(ctx context.Context, cwd string) ([]map[string]any, error) {
-	r, e := x.request(ctx, "thread/list", map[string]any{"cwd": cwd, "limit": 100, "sortKey": "updated_at", "sortDirection": "desc"})
-	if e != nil {
-		return nil, e
+func (x *CodexClient) List(ctx context.Context) ([]map[string]any, error) {
+	items := []map[string]any{}
+	cursor := ""
+	seenCursors := map[string]bool{}
+	for {
+		params := map[string]any{"limit": 100, "sortKey": "updated_at", "sortDirection": "desc"}
+		if cursor != "" {
+			params["cursor"] = cursor
+		}
+		r, e := x.request(ctx, "thread/list", params)
+		if e != nil {
+			return nil, e
+		}
+		result := obj(r)
+		items = append(items, maps(result["data"])...)
+		next, _ := result["nextCursor"].(string)
+		if next == "" {
+			return items, nil
+		}
+		if seenCursors[next] {
+			return nil, fmt.Errorf("codex app-server returned repeated thread/list cursor")
+		}
+		seenCursors[next] = true
+		cursor = next
 	}
-	return maps(obj(r)["data"]), nil
 }
 func (x *CodexClient) Read(ctx context.Context, id string) (map[string]any, error) {
 	if !ValidCodexID(id) {

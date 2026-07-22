@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
 	"time"
 
 	"github.com/CaliLuke/earwig/internal/config"
@@ -79,97 +80,100 @@ func (s *Sweeper) exporters() []exporter.Exporter {
 func (s *Sweeper) claude(ctx context.Context, o SweepOptions, now time.Time) error {
 	r := provider.ClaudeReader{Helper: s.Config.ClaudeHelper}
 	var readErrors []error
-	for _, root := range s.Config.WorkspaceRoots {
-		list, e := r.List(ctx, root)
+	if len(s.Config.WorkspaceRoots) == 0 {
+		return nil
+	}
+	list, e := r.List(ctx)
+	if e != nil {
+		return e
+	}
+	for _, v := range list {
+		if o.Session != "" && v.ID != o.Session {
+			continue
+		}
+		if !config.Allowed(s.Config, v.CWD) {
+			continue
+		}
+		if o.Session == "" {
+			changed, planErr := s.Spool.SessionNeedsSweep("claude-code-agent-sdk", v.ID, v.LastModified)
+			if planErr != nil {
+				return planErr
+			}
+			if !changed {
+				continue
+			}
+		}
+		info, msg, e := r.Read(ctx, v.ID, v.CWD)
+		if e != nil {
+			readErrors = append(readErrors, fmt.Errorf("read Claude session %s: %w", v.ID, e))
+			continue
+		}
+		t, e := normalizer.NormalizeClaude(info, msg)
 		if e != nil {
 			return e
 		}
-		for _, v := range list {
-			if o.Session != "" && v.ID != o.Session {
-				continue
-			}
-			if !config.Allowed(s.Config, v.CWD) {
-				continue
-			}
-			if o.Session == "" {
-				changed, planErr := s.Spool.SessionNeedsSweep("claude-code-agent-sdk", v.ID, v.LastModified)
-				if planErr != nil {
-					return planErr
-				}
-				if !changed {
-					continue
-				}
-			}
-			info, msg, e := r.Read(ctx, v.ID, v.CWD)
-			if e != nil {
-				readErrors = append(readErrors, fmt.Errorf("read Claude session %s: %w", v.ID, e))
-				continue
-			}
-			t, e := normalizer.NormalizeClaude(info, msg)
-			if e != nil {
-				return e
-			}
-			gapped := s.gap(t)
-			if _, e = s.Spool.UpsertTranscript(t, now); e != nil {
-				return e
-			}
-			if gapped {
-				_ = s.Spool.MarkGapWarned(t.Source, v.ID)
-			}
+		gapped := s.gap(t)
+		if _, e = s.Spool.UpsertTranscript(t, now); e != nil {
+			return e
+		}
+		if gapped {
+			_ = s.Spool.MarkGapWarned(t.Source, v.ID)
 		}
 	}
 	return errors.Join(readErrors...)
 }
 func (s *Sweeper) codex(ctx context.Context, o SweepOptions, now time.Time) error {
 	var readErrors []error
-	for _, root := range s.Config.WorkspaceRoots {
-		c, e := provider.StartCodex(ctx, root)
+	if len(s.Config.WorkspaceRoots) == 0 {
+		return nil
+	}
+	workingDirectory, e := os.UserHomeDir()
+	if e != nil {
+		return e
+	}
+	c, e := provider.StartCodex(ctx, workingDirectory)
+	if e != nil {
+		return e
+	}
+	defer c.Close()
+	list, e := c.List(ctx)
+	if e != nil {
+		return e
+	}
+	for _, item := range list {
+		id, _ := item["id"].(string)
+		cwd, _ := item["cwd"].(string)
+		if o.Session != "" && id != o.Session {
+			continue
+		}
+		if !config.Allowed(s.Config, cwd) {
+			continue
+		}
+		if o.Session == "" {
+			modified := item["updatedAt"]
+			if modified == nil {
+				modified = item["updated_at"]
+			}
+			changed, planErr := s.Spool.SessionNeedsSweep("codex-app-server", id, modified)
+			if planErr != nil {
+				return planErr
+			}
+			if !changed {
+				continue
+			}
+		}
+		thread, e := c.Read(ctx, id)
+		if e != nil {
+			readErrors = append(readErrors, fmt.Errorf("read Codex session %s: %w", id, e))
+			continue
+		}
+		t, e := normalizer.NormalizeCodex(thread)
+		if e == nil {
+			_, e = s.Spool.UpsertTranscript(t, now)
+		}
 		if e != nil {
 			return e
 		}
-		list, e := c.List(ctx, root)
-		if e != nil {
-			c.Close()
-			return e
-		}
-		for _, item := range list {
-			id, _ := item["id"].(string)
-			cwd, _ := item["cwd"].(string)
-			if o.Session != "" && id != o.Session {
-				continue
-			}
-			if !config.Allowed(s.Config, cwd) {
-				continue
-			}
-			if o.Session == "" {
-				modified := item["updatedAt"]
-				if modified == nil {
-					modified = item["updated_at"]
-				}
-				changed, planErr := s.Spool.SessionNeedsSweep("codex-app-server", id, modified)
-				if planErr != nil {
-					c.Close()
-					return planErr
-				}
-				if !changed {
-					continue
-				}
-			}
-			thread, e := c.Read(ctx, id)
-			if e != nil {
-				readErrors = append(readErrors, fmt.Errorf("read Codex session %s: %w", id, e))
-				continue
-			}
-			t, e := normalizer.NormalizeCodex(thread)
-			if e == nil {
-				_, e = s.Spool.UpsertTranscript(t, now)
-			}
-			if e != nil {
-				c.Close()
-				return e
-			}
-		}
-		c.Close()
 	}
 	return errors.Join(readErrors...)
 }

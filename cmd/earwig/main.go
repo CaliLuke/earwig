@@ -14,10 +14,17 @@ import (
 
 	"github.com/CaliLuke/earwig/internal/config"
 	"github.com/CaliLuke/earwig/internal/daemon"
+	"github.com/CaliLuke/earwig/internal/doctor"
 	"github.com/CaliLuke/earwig/internal/exporter"
 	"github.com/CaliLuke/earwig/internal/hooks"
 	"github.com/CaliLuke/earwig/internal/provider"
 	"github.com/CaliLuke/earwig/internal/spool"
+)
+
+var (
+	version   = "dev"
+	commit    = "none"
+	buildDate = "unknown"
 )
 
 func main() {
@@ -31,9 +38,19 @@ func main() {
 		runHook(os.Args[2:])
 		return
 	}
+	if os.Args[1] == "version" || os.Args[1] == "--version" {
+		fmt.Printf("earwig %s (commit %s, built %s)\n", version, commit, buildDate)
+		return
+	}
 	cfg, e := config.Load()
 	if e != nil {
 		fatal(e)
+	}
+	if os.Args[1] == "doctor" {
+		if e = doctor.Run(cfg, os.Stdout); e != nil {
+			os.Exit(1)
+		}
+		return
 	}
 	s, e := spool.Open(cfg.SpoolPath)
 	if e != nil {
@@ -167,8 +184,12 @@ func main() {
 		hooksCmd(os.Args[2:])
 	case "install":
 		exe, _ := os.Executable()
-		fmt.Print(daemon.Plist(exe))
-		fmt.Print("Install this launchd agent? [y/N] ")
+		definition, definitionErr := daemon.ServiceDefinition(exe)
+		if definitionErr != nil {
+			fatal(definitionErr)
+		}
+		fmt.Print(definition)
+		fmt.Print("Install this user service? [y/N] ")
 		var answer string
 		_, _ = fmt.Fscan(os.Stdin, &answer)
 		if strings.EqualFold(answer, "y") || strings.EqualFold(answer, "yes") {
@@ -250,5 +271,7 @@ func hooksCmd(args []string) {
 func signalContext() (context.Context, context.CancelFunc) {
 	return signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 }
-func usage()        { fmt.Fprintln(os.Stderr, "usage: earwig sweep|watch|status|stop|prune|export|hooks") }
+func usage() {
+	fmt.Fprintln(os.Stderr, "usage: earwig sweep|watch|status|stop|prune|export|hooks|install|uninstall|doctor|version")
+}
 func fatal(e error) { fmt.Fprintln(os.Stderr, "earwig:", e); os.Exit(1) }
