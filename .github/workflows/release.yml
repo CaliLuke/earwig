@@ -121,8 +121,8 @@ jobs:
           printf '%s\n' "${TAP_DEPLOY_KEY}" > ~/.ssh/homebrew_tap
           chmod 0600 ~/.ssh/homebrew_tap
           ssh-keyscan github.com >> ~/.ssh/known_hosts
-          GIT_SSH_COMMAND="ssh -i ~/.ssh/homebrew_tap -o IdentitiesOnly=yes" \
-            git clone git@github.com:CaliLuke/homebrew-tap.git tap
+          export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/homebrew_tap -o IdentitiesOnly=yes"
+          git clone git@github.com:CaliLuke/homebrew-tap.git tap
           cp dist/earwig.rb tap/Formula/earwig.rb
           cd tap
           git config user.name "github-actions[bot]"
