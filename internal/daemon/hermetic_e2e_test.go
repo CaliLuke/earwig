@@ -39,7 +39,12 @@ func TestHermeticClaudeSDKEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	configDir := filepath.Join(root, "claude-config")
-	projectKey := strings.ReplaceAll(workspace, string(filepath.Separator), "-")
+	projectKey := strings.Map(func(r rune) rune {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' {
+			return r
+		}
+		return '-'
+	}, workspace)
 	projectDir := filepath.Join(configDir, "projects", projectKey)
 	if err = os.MkdirAll(projectDir, 0700); err != nil {
 		t.Fatal(err)

@@ -113,11 +113,16 @@ jobs:
             dist/checksums.txt
             dist/earwig.rb
       - name: Update CaliLuke/homebrew-tap
-        if: ${{ env.TAP_TOKEN != '' }}
         env:
-          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          TAP_DEPLOY_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
         run: |
-          git clone "https://x-access-token:${TAP_TOKEN}@github.com/CaliLuke/homebrew-tap.git" tap
+          test -n "${TAP_DEPLOY_KEY}"
+          install -d -m 0700 ~/.ssh
+          printf '%s\n' "${TAP_DEPLOY_KEY}" > ~/.ssh/homebrew_tap
+          chmod 0600 ~/.ssh/homebrew_tap
+          ssh-keyscan github.com >> ~/.ssh/known_hosts
+          GIT_SSH_COMMAND="ssh -i ~/.ssh/homebrew_tap -o IdentitiesOnly=yes" \
+            git clone git@github.com:CaliLuke/homebrew-tap.git tap
           cp dist/earwig.rb tap/Formula/earwig.rb
           cd tap
           git config user.name "github-actions[bot]"

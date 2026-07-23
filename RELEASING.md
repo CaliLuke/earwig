@@ -10,10 +10,10 @@ generates the Homebrew formula.
 Earwig is distributed under the MIT License. Release archives include the
 repository's `LICENSE` file.
 
-Add an Actions secret named `HOMEBREW_TAP_TOKEN` to `CaliLuke/earwig`. Use a
-   fine-grained token with contents write access only to
-   `CaliLuke/homebrew-tap`. Without it, releases still publish successfully and
-   include `earwig.rb`, but the tap update step is skipped.
+Add a write-enabled deploy key to `CaliLuke/homebrew-tap`, then add its private
+key to `CaliLuke/earwig` as an Actions secret named
+`HOMEBREW_TAP_DEPLOY_KEY`. The release fails if this secret is unavailable so
+the GitHub release and Homebrew tap cannot silently drift apart.
 
 ## Release checklist
 
