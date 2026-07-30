@@ -277,8 +277,14 @@ Commands and process model
   release-time linker metadata.
 - `earwig status` — running state, last poll, last successful sweep,
   sessions tracked, turns captured (total / 24 h), exporter lag, compactions
-  observed, gap warnings. Exit 1 when behind or gapped.
+  observed, gap warnings. Exit 1 when behind or gapped; `--json` provides a
+  stable machine-readable representation.
+- `earwig sessions` — recent captured-session metadata ordered by capture time,
+  with provider, turn count, workspace, full session ID, and gap state.
+  Provider, limit, warning-only, and JSON filters never load turn payloads.
 - `earwig stop`, `earwig prune`, `earwig export --dir …`.
+- The public command tree uses Cobra for grouped help, nested commands, POSIX
+  flags, required-flag validation, typo suggestions, and shell completion.
 - Config: `~/.config/earwig/config.toml` — workspace roots (default:
   the user's home-scoped provider dirs, i.e. all projects), enabled
   providers/exporters, cadences, capture policy, `spool_path`, `opik_project`,

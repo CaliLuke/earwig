@@ -75,6 +75,10 @@ V3 — Hermetic end-to-end (`scripts/verify`)
 - Spool migrations: opening a spool seeded with legacy whole-transcript rows
   and legacy hashed-Codex rows converts both; opening it a second time is a
   no-op (idempotent).
+- CLI inspection: Cobra renders grouped root help, command-specific help,
+  required-flag errors, and typo suggestions. Session listing preserves full
+  IDs, orders by latest capture, counts turns, and applies provider/gap/limit
+  filters without loading payloads.
 
 V4 — Live Opik integration (`scripts/verify-live`)
 --------------------------------------------------

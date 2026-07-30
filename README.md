@@ -102,7 +102,11 @@ responsibility.
 
 - `earwig sweep [--session <id>] [--provider codex|claude]` captures once.
 - `earwig watch` runs the foreground daemon.
-- `earwig status` reports daemon, capture, and exporter health.
+- `earwig sessions [--provider codex|claude] [--limit N]` lists captured
+  sessions without printing their content. Add `--warnings` to inspect capture
+  gaps or `--json` for scripts.
+- `earwig status` reports daemon, capture, and exporter health in a readable
+  summary. Add `--json` for machine-readable output.
 - `earwig stop` stops the running daemon.
 - `earwig hooks install|remove` manages Claude pre-compaction hooks.
 - `earwig prune --older-than <duration>` removes old, unprotected turns.
@@ -111,6 +115,10 @@ responsibility.
   service.
 - `earwig doctor` checks configuration, paths, and provider dependencies.
 - `earwig version` prints release build metadata.
+- `earwig completion bash|zsh|fish|powershell` generates shell completion.
+
+Run `earwig help` to see the grouped command list or
+`earwig help <command>` for flags and examples.
 
 See [DESIGN.md](DESIGN.md) for architecture and behavior,
 [VALIDATION.md](VALIDATION.md) for the test contract, and

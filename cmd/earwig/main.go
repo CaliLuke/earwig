@@ -2,20 +2,14 @@ package main
 
 import (
 	"context"
-	"flag"
 	"fmt"
+	"io"
 	"log"
 	"os"
-	"os/signal"
-	"path/filepath"
-	"strings"
-	"syscall"
 	"time"
 
 	"github.com/CaliLuke/earwig/internal/config"
 	"github.com/CaliLuke/earwig/internal/daemon"
-	"github.com/CaliLuke/earwig/internal/doctor"
-	"github.com/CaliLuke/earwig/internal/exporter"
 	"github.com/CaliLuke/earwig/internal/hooks"
 	"github.com/CaliLuke/earwig/internal/provider"
 	"github.com/CaliLuke/earwig/internal/spool"
@@ -27,251 +21,121 @@ var (
 	buildDate = "unknown"
 )
 
+type application struct {
+	in       io.Reader
+	out      io.Writer
+	err      io.Writer
+	cfg      *config.Config
+	spool    *spool.Spool
+	exitCode int
+}
+
 func main() {
-	if len(os.Args) < 2 {
-		usage()
+	// Claude invokes this internal entrypoint from managed hooks. It stays
+	// outside the public command tree and must always return zero so a capture
+	// failure can never block or alter an agent session.
+	if len(os.Args) > 1 && os.Args[1] == "hook" {
+		runHook(os.Args[2:], os.Stdin, os.Stderr)
 		return
 	}
-	// Claude invokes this entrypoint from managed hooks. It must always return
-	// zero so capture failures can never block or alter an agent session.
-	if os.Args[1] == "hook" {
-		runHook(os.Args[2:])
-		return
+	os.Exit(runCLI(os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
+}
+
+func runCLI(args []string, in io.Reader, out, errOut io.Writer) int {
+	app := &application{in: in, out: out, err: errOut}
+	defer app.close()
+
+	root := newRootCommand(app)
+	root.SetArgs(args)
+	if err := root.Execute(); err != nil {
+		if app.exitCode != 0 {
+			return app.exitCode
+		}
+		return 1
 	}
-	if os.Args[1] == "version" || os.Args[1] == "--version" {
-		fmt.Printf("earwig %s (commit %s, built %s)\n", version, commit, buildDate)
-		return
+	return app.exitCode
+}
+
+func (a *application) config() (config.Config, error) {
+	if a.cfg == nil {
+		cfg, err := config.Load()
+		if err != nil {
+			return config.Config{}, err
+		}
+		a.cfg = &cfg
 	}
-	cfg, e := config.Load()
-	if e != nil {
-		fatal(e)
+	return *a.cfg, nil
+}
+
+func (a *application) openSpool() (*spool.Spool, error) {
+	if a.spool == nil {
+		cfg, err := a.config()
+		if err != nil {
+			return nil, err
+		}
+		a.spool, err = spool.Open(cfg.SpoolPath)
+		if err != nil {
+			return nil, err
+		}
 	}
-	if os.Args[1] == "doctor" {
-		if e = doctor.Run(cfg, os.Stdout); e != nil {
-			os.Exit(1)
-		}
-		return
+	return a.spool, nil
+}
+
+func (a *application) sweeper() (*daemon.Sweeper, error) {
+	cfg, err := a.config()
+	if err != nil {
+		return nil, err
 	}
-	s, e := spool.Open(cfg.SpoolPath)
-	if e != nil {
-		fatal(e)
+	store, err := a.openSpool()
+	if err != nil {
+		return nil, err
 	}
-	defer func() { _ = s.Close() }()
-	sw := &daemon.Sweeper{Config: cfg, Spool: s, Log: log.New(os.Stderr, "earwig: ", log.LstdFlags)}
-	switch os.Args[1] {
-	case "sweep":
-		fs := flag.NewFlagSet("sweep", flag.ExitOnError)
-		session := fs.String("session", "", "")
-		p := fs.String("provider", "", "")
-		_ = fs.Parse(os.Args[2:])
-		if *p != "" && *p != "claude" && *p != "codex" {
-			fatal(fmt.Errorf("provider must be claude or codex"))
-		}
-		if *session != "" && *p == "" {
-			fatal(fmt.Errorf("--session requires --provider"))
-		}
-		if *session != "" && ((*p == "claude" && !provider.ValidClaudeID(*session)) || (*p == "codex" && !provider.ValidCodexID(*session))) {
-			fatal(fmt.Errorf("invalid session ID"))
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
-		defer cancel()
-		if e := sw.Sweep(ctx, daemon.SweepOptions{Session: *session, Provider: *p}); e != nil {
-			fmt.Fprintln(os.Stderr, "earwig:", e)
-		}
-	case "watch":
-		lock, e := daemon.Acquire(cfg.SpoolPath + ".lock")
-		if e != nil {
-			fmt.Fprintln(os.Stderr, "earwig:", e)
-			os.Exit(2)
-		}
-		defer lock.Release()
-		ctx, stop := signalContext()
-		defer stop()
-		home, _ := os.UserHomeDir()
-		paths := []string{filepath.Join(home, ".claude", "projects"), config.CodexSessionsPath()}
-		_ = daemon.Watch(ctx, &daemon.Watcher{Sweeper: sw, Spool: s}, paths)
-	case "status":
-		total, recent, e := s.Stats()
-		if e != nil {
-			fatal(e)
-		}
-		behind := false
-		if pid, running, err := daemon.LockStatus(cfg.SpoolPath + ".lock"); err == nil && running {
-			fmt.Printf("daemon: running (pid %d)\n", pid)
-		} else {
-			fmt.Println("daemon: stopped")
-		}
-		for _, key := range []string{"last_poll", "last_sweep_started", "last_sweep_completed", "last_sweep_success", "last_sweep_error"} {
-			if v, err := s.GetHealth(key); err == nil {
-				fmt.Printf("%s: %s\n", key, v)
-			}
-		}
-		sessionStats, _ := s.SessionStats()
-		fmt.Printf("sessions: %d; compactions observed: %d\n", sessionStats.Sessions, sessionStats.Compactions)
-		names := []string{}
-		if cfg.JSONDir != "" {
-			names = append(names, "jsondir")
-		}
-		if cfg.OpikURL != "" {
-			names = append(names, "opik")
-		}
-		for _, name := range names {
-			v, e := s.GetHealth("exporter_" + name + "_behind")
-			if e == nil && v != "null" {
-				behind = true
-				fmt.Printf("%s: behind (%s)\n", name, v)
-			}
-			if n, err := s.PendingCount(name); err == nil && n > 0 {
-				behind = true
-				fmt.Printf("%s: %d pending\n", name, n)
-			}
-		}
-		fmt.Printf("turns: %d total / %d last 24h\n", total, recent)
-		if sessionStats.GapWarnings > 0 {
-			behind = true
-			fmt.Printf("gap warnings: %d\n", sessionStats.GapWarnings)
-		}
-		if behind {
-			os.Exit(1)
-		}
-	case "stop":
-		if e := daemon.Stop(cfg.SpoolPath + ".lock"); e != nil {
-			fatal(e)
-		}
-	case "prune":
-		fs := flag.NewFlagSet("prune", flag.ExitOnError)
-		older := fs.String("older-than", "", "")
-		_ = fs.Parse(os.Args[2:])
-		d, e := time.ParseDuration(*older)
-		if e != nil || d <= 0 {
-			fatal(fmt.Errorf("--older-than positive duration required"))
-		}
-		before := time.Now().Add(-d)
-		opikIDs, e := s.ExportedTraceIDsBefore("opik", before)
-		if e != nil {
-			fatal(e)
-		}
-		protected := map[string]bool{}
-		if len(opikIDs) > 0 {
-			if cfg.OpikURL == "" {
-				fatal(fmt.Errorf("cannot prune: opik_url is required to verify retention tags for %d exported traces", len(opikIDs)))
-			}
-			protected, e = (exporter.Opik{URL: cfg.OpikURL, ProjectName: cfg.OpikProject}).ProtectedTraceIDs(opikIDs)
-			if e != nil {
-				fatal(fmt.Errorf("cannot verify upstream retention state: %w", e))
-			}
-		}
-		n, e := s.Prune(before, protected)
-		if e != nil {
-			fatal(e)
-		}
-		fmt.Printf("pruned %d turns\n", n)
-	case "export":
-		fs := flag.NewFlagSet("export", flag.ExitOnError)
-		dir := fs.String("dir", "", "")
-		_ = fs.Parse(os.Args[2:])
-		if *dir == "" {
-			fatal(fmt.Errorf("--dir required"))
-		}
-		old := sw.Config.JSONDir
-		sw.Config.JSONDir = *dir
-		sw.Config.OpikURL = ""
-		if e := sw.Sweep(context.Background(), daemon.SweepOptions{}); e != nil {
-			fmt.Fprintln(os.Stderr, "earwig:", e)
-		}
-		sw.Config.JSONDir = old
-	case "hooks":
-		hooksCmd(os.Args[2:])
-	case "install":
-		exe, _ := os.Executable()
-		definition, definitionErr := daemon.ServiceDefinition(exe)
-		if definitionErr != nil {
-			fatal(definitionErr)
-		}
-		fmt.Print(definition)
-		fmt.Print("Install this user service? [y/N] ")
-		var answer string
-		_, _ = fmt.Fscan(os.Stdin, &answer)
-		if strings.EqualFold(answer, "y") || strings.EqualFold(answer, "yes") {
-			if e := daemon.Install(exe); e != nil {
-				fatal(e)
-			}
-		}
-	case "uninstall":
-		if e := daemon.Uninstall(); e != nil {
-			fatal(e)
-		}
-	default:
-		usage()
+	return &daemon.Sweeper{
+		Config: cfg,
+		Spool:  store,
+		Log:    log.New(a.err, "earwig: ", log.LstdFlags),
+	}, nil
+}
+
+func (a *application) close() {
+	if a.spool != nil {
+		_ = a.spool.Close()
 	}
 }
 
-func runHook(args []string) {
+func runHook(args []string, in io.Reader, errOut io.Writer) {
 	if len(args) != 2 || args[0] != "claude" || args[1] != hooks.ManagedArgument {
-		fmt.Fprintln(os.Stderr, "earwig: invalid managed hook invocation")
+		_, _ = fmt.Fprintln(errOut, "earwig: invalid managed hook invocation")
 		return
 	}
-	sessionID, err := hooks.SessionID(os.Stdin)
+	sessionID, err := hooks.SessionID(in)
 	if err != nil || !provider.ValidClaudeID(sessionID) {
 		if err == nil {
 			err = fmt.Errorf("invalid Claude session ID")
 		}
-		fmt.Fprintln(os.Stderr, "earwig:", err)
+		_, _ = fmt.Fprintln(errOut, "earwig:", err)
 		return
 	}
 	cfg, err := config.Load()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "earwig:", err)
+		_, _ = fmt.Fprintln(errOut, "earwig:", err)
 		return
 	}
-	s, err := spool.Open(cfg.SpoolPath)
+	store, err := spool.Open(cfg.SpoolPath)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "earwig:", err)
+		_, _ = fmt.Fprintln(errOut, "earwig:", err)
 		return
 	}
-	defer func() { _ = s.Close() }()
-	sw := &daemon.Sweeper{Config: cfg, Spool: s, Log: log.New(os.Stderr, "earwig: ", log.LstdFlags)}
+	defer func() { _ = store.Close() }()
+
+	sw := &daemon.Sweeper{
+		Config: cfg,
+		Spool:  store,
+		Log:    log.New(errOut, "earwig: ", log.LstdFlags),
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	if err = sw.Sweep(ctx, daemon.SweepOptions{Session: sessionID, Provider: "claude"}); err != nil {
-		fmt.Fprintln(os.Stderr, "earwig:", err)
+		_, _ = fmt.Fprintln(errOut, "earwig:", err)
 	}
 }
-
-func hooksCmd(args []string) {
-	if len(args) != 1 {
-		fatal(fmt.Errorf("hooks install|remove"))
-	}
-	switch args[0] {
-	case "install":
-		exe, _ := os.Executable()
-		p, e := hooks.Preview(exe)
-		if e != nil {
-			fatal(e)
-		}
-		fmt.Println(p)
-		fmt.Print("Install these Claude hooks? [y/N] ")
-		var answer string
-		_, _ = fmt.Fscan(os.Stdin, &answer)
-		if strings.ToLower(answer) != "y" && strings.ToLower(answer) != "yes" {
-			return
-		}
-		exe, _ = os.Executable()
-		if e := hooks.Install(exe); e != nil {
-			fatal(e)
-		}
-	case "remove":
-		if e := hooks.Remove(); e != nil {
-			fatal(e)
-		}
-	default:
-		fatal(fmt.Errorf("hooks install|remove"))
-	}
-}
-func signalContext() (context.Context, context.CancelFunc) {
-	return signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-}
-func usage() {
-	fmt.Fprintln(os.Stderr, "usage: earwig sweep|watch|status|stop|prune|export|hooks|install|uninstall|doctor|version")
-}
-func fatal(e error) { fmt.Fprintln(os.Stderr, "earwig:", e); os.Exit(1) }
