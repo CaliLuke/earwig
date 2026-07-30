@@ -102,9 +102,10 @@ responsibility.
 
 - `earwig sweep [--session <id>] [--provider codex|claude]` captures once.
 - `earwig watch` runs the foreground daemon.
-- `earwig sessions [--provider codex|claude] [--limit N]` lists captured
-  sessions without printing their content. Add `--warnings` to inspect capture
-  gaps or `--json` for scripts.
+- `earwig sessions` lists recently active sessions by project and title. Filter
+  with `--project`, `--search`, `--provider`, or `--warnings`; use `--long` for
+  full paths and IDs or `--json` for scripts.
+- `earwig sessions show <id-prefix>` shows complete metadata for one session.
 - `earwig status` reports daemon, capture, and exporter health in a readable
   summary. Add `--json` for machine-readable output.
 - `earwig stop` stops the running daemon.

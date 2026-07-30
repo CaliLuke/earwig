@@ -106,16 +106,16 @@ func sessionSummary(session map[string]any) any {
 
 func sessionLastModified(t normalizer.Transcript) int64 {
 	if t.Source == "codex-app-server" {
-		return normalizerTimestamp(t.Session["updated_at"])
+		return sessionTimestamp(t.Source, t.Session["updated_at"])
 	}
-	return normalizerTimestamp(t.Session["last_modified"])
+	return sessionTimestamp(t.Source, t.Session["last_modified"])
 }
 
 // SessionNeedsSweep is the read planner. Unknown timestamps are read
 // conservatively; known sessions are read only after their provider-reported
 // mtime advances.
 func (s *Spool) SessionNeedsSweep(provider, sessionID string, lastModified any) (bool, error) {
-	candidate := normalizerTimestamp(lastModified)
+	candidate := sessionTimestamp(provider, lastModified)
 	if candidate <= 0 {
 		return true, nil
 	}
@@ -128,6 +128,16 @@ func (s *Spool) SessionNeedsSweep(provider, sessionID string, lastModified any) 
 		return false, err
 	}
 	return candidate > stored, nil
+}
+
+func sessionTimestamp(provider string, value any) int64 {
+	timestamp := normalizerTimestamp(value)
+	// Codex app-server numeric timestamps are Unix seconds. The spool schema
+	// and Claude helper both use milliseconds.
+	if provider == "codex-app-server" && timestamp > 0 && timestamp < 100000000000 {
+		return timestamp * 1000
+	}
+	return timestamp
 }
 
 func (s *Spool) Session(provider, sessionID string) (SessionState, bool, error) {

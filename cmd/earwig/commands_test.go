@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/CaliLuke/earwig/internal/spool"
 )
@@ -57,7 +58,10 @@ func TestSessionsHelpDocumentsInspectionFlags(t *testing.T) {
 	if exitCode != 0 {
 		t.Fatalf("exit=%d stderr=%s", exitCode, stderr.String())
 	}
-	for _, want := range []string{"--provider", "--limit", "--warnings", "--json", "without loading or printing"} {
+	for _, want := range []string{
+		"--provider", "--project", "--search", "--limit", "--warnings", "--long", "--json",
+		"show", "without loading or printing",
+	} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Errorf("sessions help omitted %q:\n%s", want, stdout.String())
 		}
@@ -71,6 +75,7 @@ func TestProviderAndLimitValidation(t *testing.T) {
 	}{
 		{[]string{"sessions", "--provider", "other"}, "--provider must be claude or codex"},
 		{[]string{"sessions", "--limit", "0"}, "--limit must be between 1 and 1000"},
+		{[]string{"sessions", "show", "abc"}, "at least 4 characters"},
 		{[]string{"sweep", "--session", "abc"}, "--session requires --provider"},
 	} {
 		var stdout, stderr bytes.Buffer
@@ -81,7 +86,39 @@ func TestProviderAndLimitValidation(t *testing.T) {
 	}
 }
 
-func TestSessionsTablePreservesFullSessionIDs(t *testing.T) {
+func TestSessionsTablePrioritizesHumanRecognizableMetadata(t *testing.T) {
+	var stdout bytes.Buffer
+	app := &application{out: &stdout}
+	id := "019fb35e-cd1f-72c1-b95f-f265043655ec"
+	err := writeSessionsTable(app, sessionsResult{
+		Total:       1,
+		GapWarnings: 1,
+		Sessions: []spool.CapturedSession{{
+			Provider:       "codex-app-server",
+			SessionID:      id,
+			IDPrefix:       "019fb35e",
+			CWD:            "/work/earwig",
+			Summary:        "Set up Earwig\nlocally",
+			LastActivityMS: time.Now().Add(-9 * time.Minute).UnixMilli(),
+			Turns:          7,
+		}},
+	}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"1 session · 1 warning", "PROJECT", "TITLE", "Set up Earwig locally", "earwig", "019fb35e"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Errorf("table omitted %q:\n%s", want, stdout.String())
+		}
+	}
+	for _, unwanted := range []string{"/work/earwig", id, "STATE"} {
+		if strings.Contains(stdout.String(), unwanted) {
+			t.Errorf("default table included %q:\n%s", unwanted, stdout.String())
+		}
+	}
+}
+
+func TestLongSessionsTablePreservesFullMetadata(t *testing.T) {
 	var stdout bytes.Buffer
 	app := &application{out: &stdout}
 	id := "019fb35e-cd1f-72c1-b95f-f265043655ec"
@@ -91,16 +128,63 @@ func TestSessionsTablePreservesFullSessionIDs(t *testing.T) {
 			Provider:       "codex-app-server",
 			SessionID:      id,
 			CWD:            "/work/earwig",
-			LastCapturedMS: 1000,
+			Summary:        "Set up Earwig locally",
+			LastActivityMS: 1785428000000,
+			LastCapturedMS: 1785429000000,
 			Turns:          7,
 		}},
+	}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"ACTIVITY", "CAPTURED", "STATE", "/work/earwig", id} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Errorf("long table omitted %q:\n%s", want, stdout.String())
+		}
+	}
+}
+
+func TestSessionDetailsExposeDrillDownMetadata(t *testing.T) {
+	var stdout bytes.Buffer
+	app := &application{out: &stdout}
+	err := writeSessionDetails(app, spool.CapturedSession{
+		Provider:       "claude-code-agent-sdk",
+		SessionID:      "3f6ec84f-8ab9-42a3-a59c-ef4d38dac252",
+		CWD:            "/work/autok-server",
+		Summary:        "Investigate capture gap",
+		LastActivityMS: time.Now().Add(-time.Hour).UnixMilli(),
+		Turns:          7,
+		Compactions:    1,
+		HasGapWarning:  true,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"Captured sessions (showing 1 of 1)", "Codex", id} {
+	for _, want := range []string{
+		"Investigate capture gap", "source: Claude", "project: autok-server",
+		"turns: 7", "state: capture gap warning",
+	} {
 		if !strings.Contains(stdout.String(), want) {
-			t.Errorf("table omitted %q:\n%s", want, stdout.String())
+			t.Errorf("details omitted %q:\n%s", want, stdout.String())
+		}
+	}
+}
+
+func TestActivityAgeUsesCompactRelativeUnits(t *testing.T) {
+	now := time.Date(2026, 7, 30, 18, 0, 0, 0, time.UTC)
+	for _, test := range []struct {
+		ago  time.Duration
+		want string
+	}{
+		{30 * time.Second, "now"},
+		{9 * time.Minute, "9m"},
+		{3 * time.Hour, "3h"},
+		{12 * 24 * time.Hour, "12d"},
+		{90 * 24 * time.Hour, "3mo"},
+	} {
+		got := formatActivityAge(now.Add(-test.ago).UnixMilli(), now)
+		if got != test.want {
+			t.Errorf("%s ago = %q, want %q", test.ago, got, test.want)
 		}
 	}
 }

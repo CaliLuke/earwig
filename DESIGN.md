@@ -279,9 +279,15 @@ Commands and process model
   sessions tracked, turns captured (total / 24 h), exporter lag, compactions
   observed, gap warnings. Exit 1 when behind or gapped; `--json` provides a
   stable machine-readable representation.
-- `earwig sessions` — recent captured-session metadata ordered by capture time,
-  with provider, turn count, workspace, full session ID, and gap state.
-  Provider, limit, warning-only, and JSON filters never load turn payloads.
+- `earwig sessions` — recent captured-session metadata ordered by provider
+  activity time. The default human view prioritizes project, title, turn count,
+  and a globally unique short ID; `--long` exposes full paths, IDs, timestamps,
+  and gap state. Provider, project, literal search, limit, warning-only, and
+  JSON filters never load turn payloads.
+- `earwig sessions show <id-prefix>` — resolve an exact ID or globally unique
+  prefix and show the session's complete metadata without loading its turns.
+  Codex numeric activity timestamps are normalized from Unix seconds into the
+  spool's millisecond convention.
 - `earwig stop`, `earwig prune`, `earwig export --dir …`.
 - The public command tree uses Cobra for grouped help, nested commands, POSIX
   flags, required-flag validation, typo suggestions, and shell completion.

@@ -77,8 +77,10 @@ V3 — Hermetic end-to-end (`scripts/verify`)
   no-op (idempotent).
 - CLI inspection: Cobra renders grouped root help, command-specific help,
   required-flag errors, and typo suggestions. Session listing preserves full
-  IDs, orders by latest capture, counts turns, and applies provider/gap/limit
-  filters without loading payloads.
+  IDs in JSON/long output, orders by normalized provider activity, counts
+  turns, generates globally unique short IDs, and applies provider, project,
+  literal-search, gap, and limit filters without loading payloads. Exact and
+  unique-prefix detail lookups succeed; ambiguous prefixes fail explicitly.
 
 V4 — Live Opik integration (`scripts/verify-live`)
 --------------------------------------------------
