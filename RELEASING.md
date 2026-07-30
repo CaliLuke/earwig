@@ -32,8 +32,7 @@ the GitHub release and Homebrew tap cannot silently drift apart.
 5. Install from the tap on a clean machine and run `earwig doctor`:
 
    ```sh
-   brew tap caliluke/tap
-   brew install earwig
+   brew install caliluke/tap/earwig
    earwig doctor
    brew services start earwig
    ```

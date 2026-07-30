@@ -13,11 +13,13 @@ Release bundles contain both Earwig and its compiled Claude reader, so Node.js
 is not required at runtime. On macOS or Linux, install with Homebrew:
 
 ```sh
-brew tap caliluke/tap
-brew install earwig
+brew install caliluke/tap/earwig
 earwig doctor
 brew services start earwig
 ```
+
+Using the fully qualified formula name trusts only Earwig, as required for
+non-official taps by Homebrew 6.0 and newer.
 
 Alternatively, download the archive for your OS and architecture from the
 [GitHub releases page](https://github.com/CaliLuke/earwig/releases), verify it

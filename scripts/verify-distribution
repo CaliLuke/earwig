@@ -51,4 +51,5 @@ for target in darwin_amd64 darwin_arm64 linux_amd64 linux_arm64; do
 done
 ./scripts/render-homebrew-formula "$version" "$checksums" > "$distribution_tmp/earwig.rb"
 ruby -c "$distribution_tmp/earwig.rb" >/dev/null
+grep -F 'environment_variables PATH: std_service_path_env' "$distribution_tmp/earwig.rb" >/dev/null
 printf 'VERIFY-DISTRIBUTION PASS (%s/%s)\n' "$os" "$arch"

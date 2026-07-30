@@ -71,6 +71,7 @@ class Earwig < Formula
 
   service do
     run [opt_bin/"earwig", "watch"]
+    environment_variables PATH: std_service_path_env
     keep_alive true
     working_dir var
     log_path var/"log/earwig.log"
