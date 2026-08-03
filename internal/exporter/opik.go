@@ -32,6 +32,10 @@ func (o Opik) projectName() string {
 	return "earwig"
 }
 
+func (o Opik) Validate() error {
+	return validateOpikURL(o.URL)
+}
+
 func (o Opik) httpClient(timeout time.Duration) *http.Client {
 	var client http.Client
 	if o.Client != nil {
@@ -73,7 +77,7 @@ func validateOpikURL(raw string) error {
 }
 
 func (o Opik) Health() error {
-	if e := validateOpikURL(o.URL); e != nil {
+	if e := o.Validate(); e != nil {
 		return e
 	}
 	c := o.httpClient(5 * time.Second)
@@ -89,7 +93,7 @@ func (o Opik) Health() error {
 }
 
 func (o Opik) Export(rows []spool.Row) error {
-	if e := validateOpikURL(o.URL); e != nil {
+	if e := o.Validate(); e != nil {
 		return e
 	}
 	c := o.httpClient(15 * time.Second)
@@ -173,7 +177,7 @@ func (o Opik) request(client *http.Client, method, path string, body any) (int, 
 // Prune treats lookup failures as fatal so local evidence is never deleted
 // when upstream retention state cannot be verified.
 func (o Opik) ProtectedTraceIDs(ids []string) (map[string]bool, error) {
-	if err := validateOpikURL(o.URL); err != nil {
+	if err := o.Validate(); err != nil {
 		return nil, err
 	}
 	client := o.httpClient(15 * time.Second)

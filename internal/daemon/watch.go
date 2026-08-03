@@ -110,17 +110,30 @@ type Watcher struct {
 	SweepTimeout   time.Duration
 	mu             sync.Mutex
 	running, dirty bool
+	done           chan struct{}
+	sweep          func(context.Context) error
 }
 
 func (w *Watcher) trigger(ctx context.Context) {
-	w.Sweeper.note("last_poll", time.Now())
+	if ctx.Err() != nil {
+		return
+	}
+	if w.Sweeper != nil {
+		w.Sweeper.note("last_poll", time.Now())
+	}
 	w.mu.Lock()
+	if ctx.Err() != nil {
+		w.mu.Unlock()
+		return
+	}
 	if w.running {
 		w.dirty = true
 		w.mu.Unlock()
 		return
 	}
 	w.running = true
+	w.dirty = false
+	w.done = make(chan struct{})
 	w.mu.Unlock()
 	go func() {
 		for {
@@ -129,11 +142,17 @@ func (w *Watcher) trigger(ctx context.Context) {
 				timeout = 3 * time.Minute
 			}
 			sweepCtx, cancel := context.WithTimeout(ctx, timeout)
-			_ = w.Sweeper.Sweep(sweepCtx, SweepOptions{})
+			if w.sweep != nil {
+				_ = w.sweep(sweepCtx)
+			} else {
+				_ = w.Sweeper.Sweep(sweepCtx, SweepOptions{})
+			}
 			cancel()
 			w.mu.Lock()
-			if !w.dirty {
+			if ctx.Err() != nil || !w.dirty {
 				w.running = false
+				w.dirty = false
+				close(w.done)
 				w.mu.Unlock()
 				return
 			}
@@ -142,6 +161,19 @@ func (w *Watcher) trigger(ctx context.Context) {
 		}
 	}()
 }
+
+// wait joins the one sweep worker. The worker owns every provider child until
+// its provider has terminated and waited for it, so Watch must join the worker
+// before releasing the daemon lock and exiting.
+func (w *Watcher) wait() {
+	w.mu.Lock()
+	done := w.done
+	w.mu.Unlock()
+	if done != nil {
+		<-done
+	}
+}
+
 func Watch(ctx context.Context, w *Watcher, paths []string) error {
 	f, e := fsnotify.NewWatcher()
 	if e != nil {
@@ -157,11 +189,16 @@ func Watch(ctx context.Context, w *Watcher, paths []string) error {
 		})
 	}
 	w.trigger(ctx)
-	activeEvery := time.Duration(w.Sweeper.Config.ActivePollSeconds) * time.Second
+	var activePollSeconds, idlePollSeconds int
+	if w.Sweeper != nil {
+		activePollSeconds = w.Sweeper.Config.ActivePollSeconds
+		idlePollSeconds = w.Sweeper.Config.IdlePollSeconds
+	}
+	activeEvery := time.Duration(activePollSeconds) * time.Second
 	if activeEvery <= 0 {
 		activeEvery = 15 * time.Second
 	}
-	idleEvery := time.Duration(w.Sweeper.Config.IdlePollSeconds) * time.Second
+	idleEvery := time.Duration(idlePollSeconds) * time.Second
 	if idleEvery <= 0 {
 		idleEvery = 5 * time.Minute
 	}
@@ -175,6 +212,7 @@ func Watch(ctx context.Context, w *Watcher, paths []string) error {
 	for {
 		select {
 		case <-ctx.Done():
+			w.wait()
 			return nil
 		case e := <-f.Errors:
 			if e != nil {

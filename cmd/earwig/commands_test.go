@@ -2,10 +2,17 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/CaliLuke/earwig/internal/config"
+	"github.com/CaliLuke/earwig/internal/normalizer"
 	"github.com/CaliLuke/earwig/internal/spool"
 )
 
@@ -52,6 +59,120 @@ func TestCobraRequiredFlagAndSuggestions(t *testing.T) {
 	}
 }
 
+func TestOpikExportHelpDocumentsSelectiveExport(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	exitCode := runCLI([]string{"export", "opik", "--help"}, strings.NewReader(""), &stdout, &stderr)
+	if exitCode != 0 {
+		t.Fatalf("exit=%d stderr=%s", exitCode, stderr.String())
+	}
+	for _, want := range []string{
+		"--url", "--project", "--session", "repeat for multiple sessions",
+		"unique prefixes", "does not capture new data", "unrelated pending sessions",
+	} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Errorf("Opik export help omitted %q:\n%s", want, stdout.String())
+		}
+	}
+}
+
+func TestOpikExportRequiresURLAndSessions(t *testing.T) {
+	for _, test := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"export", "opik", "--session", "019fb35e"}, `required flag(s) "url" not set`},
+		{[]string{"export", "opik", "--url", "https://opik.example.test"}, `required flag(s) "session" not set`},
+		{[]string{"export", "opik", "--url", "ssh://opik.example.test", "--session", "019fb35e"}, "exporter URL must be HTTP(S)"},
+		{[]string{"export", "opik", "--url", "https://opik.example.test", "--session", "abc"}, "at least 4 characters"},
+	} {
+		assertCLIError(t, test.args, test.want)
+	}
+}
+
+func TestOpikExportSendsOnlySelectedCapturedSessions(t *testing.T) {
+	store, err := spool.Open(filepath.Join(t.TempDir(), "spool.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.SpoolPath = store.Path
+	var stdout, stderr bytes.Buffer
+	app := &application{
+		in:    strings.NewReader(""),
+		out:   &stdout,
+		err:   &stderr,
+		cfg:   &cfg,
+		spool: store,
+	}
+	defer app.close()
+
+	sessionIDs := []string{
+		"019fb35e-cd1f-72c1-b95f-f265043655ec",
+		"029fb35e-cd1f-72c1-b95f-f265043655ec",
+		"039fb35e-cd1f-72c1-b95f-f265043655ec",
+	}
+	for index, sessionID := range sessionIDs {
+		transcript := normalizer.Transcript{
+			SchemaVersion: 1,
+			Source:        "codex-app-server",
+			Session: map[string]any{
+				"id":         sessionID,
+				"cwd":        "/work/project",
+				"name":       "Session " + sessionID[:8],
+				"created_at": int64(1000 + index),
+				"updated_at": int64(2000 + index),
+			},
+			Turns: []normalizer.Turn{{
+				ID:          "turn-" + sessionID[:8],
+				Status:      "completed",
+				StartedAt:   int64(1000 + index),
+				CompletedAt: int64(1100 + index),
+			}},
+		}
+		if _, err = store.UpsertTranscript(transcript, time.Now()); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var exportedSessions []string
+	var exportedProjects []string
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		body, _ := io.ReadAll(request.Body)
+		var trace map[string]any
+		_ = json.Unmarshal(body, &trace)
+		exportedSessions = append(exportedSessions, trace["thread_id"].(string))
+		exportedProjects = append(exportedProjects, trace["project_name"].(string))
+		writer.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	root := newRootCommand(app)
+	root.SetArgs([]string{
+		"export", "opik",
+		"--url", server.URL,
+		"--project", "review",
+		"--session", sessionIDs[0][:8],
+		"--session", sessionIDs[2],
+		"--session", sessionIDs[0],
+	})
+	if err = root.Execute(); err != nil {
+		t.Fatalf("execute: %v\nstderr=%s", err, stderr.String())
+	}
+	if strings.Join(exportedSessions, ",") != sessionIDs[0]+","+sessionIDs[2] {
+		t.Fatalf("exported sessions = %#v", exportedSessions)
+	}
+	if strings.Join(exportedProjects, ",") != "review,review" {
+		t.Fatalf("exported projects = %#v", exportedProjects)
+	}
+	if !strings.Contains(stdout.String(), `Exported 2 turns from 2 sessions to Opik project "review".`) {
+		t.Fatalf("stdout=%s", stdout.String())
+	}
+	checkpoints, err := store.ExportCount("opik")
+	if err != nil || checkpoints != 0 {
+		t.Fatalf("explicit export changed automatic checkpoints: count=%d err=%v", checkpoints, err)
+	}
+}
+
 func TestSessionsHelpDocumentsInspectionFlags(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	exitCode := runCLI([]string{"sessions", "--help"}, strings.NewReader(""), &stdout, &stderr)
@@ -78,11 +199,16 @@ func TestProviderAndLimitValidation(t *testing.T) {
 		{[]string{"sessions", "show", "abc"}, "at least 4 characters"},
 		{[]string{"sweep", "--session", "abc"}, "--session requires --provider"},
 	} {
-		var stdout, stderr bytes.Buffer
-		exitCode := runCLI(test.args, strings.NewReader(""), &stdout, &stderr)
-		if exitCode != 1 || !strings.Contains(stderr.String(), test.want) {
-			t.Errorf("%v exit=%d stderr=%s", test.args, exitCode, stderr.String())
-		}
+		assertCLIError(t, test.args, test.want)
+	}
+}
+
+func assertCLIError(t *testing.T, args []string, want string) {
+	t.Helper()
+	var stdout, stderr bytes.Buffer
+	exitCode := runCLI(args, strings.NewReader(""), &stdout, &stderr)
+	if exitCode != 1 || !strings.Contains(stderr.String(), want) {
+		t.Errorf("%v exit=%d stderr=%s", args, exitCode, stderr.String())
 	}
 }
 

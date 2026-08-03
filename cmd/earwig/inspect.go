@@ -114,25 +114,29 @@ func newSessionShowCommand(app *application) *cobra.Command {
 			if len(args) > 0 {
 				return nil, cobra.ShellCompDirectiveNoFileComp
 			}
-			store, err := app.openSpool()
-			if err != nil {
-				return nil, cobra.ShellCompDirectiveError
-			}
-			sessions, _, err := store.ListSessions(spool.SessionFilter{Limit: 1000})
-			if err != nil {
-				return nil, cobra.ShellCompDirectiveError
-			}
-			values := make([]string, 0)
-			for _, session := range sessions {
-				if strings.HasPrefix(session.SessionID, toComplete) {
-					values = append(values, session.SessionID+"\t"+singleLine(session.Summary))
-				}
-			}
-			return values, cobra.ShellCompDirectiveNoFileComp
+			return completeSessionIDs(app, toComplete)
 		},
 	}
 	cmd.Flags().BoolVar(&asJSON, "json", false, "print machine-readable JSON")
 	return cmd
+}
+
+func completeSessionIDs(app *application, toComplete string) ([]string, cobra.ShellCompDirective) {
+	store, err := app.openSpool()
+	if err != nil {
+		return nil, cobra.ShellCompDirectiveError
+	}
+	sessions, _, err := store.ListSessions(spool.SessionFilter{Limit: 1000})
+	if err != nil {
+		return nil, cobra.ShellCompDirectiveError
+	}
+	values := make([]string, 0)
+	for _, session := range sessions {
+		if strings.HasPrefix(session.SessionID, toComplete) {
+			values = append(values, session.SessionID+"\t"+singleLine(session.Summary))
+		}
+	}
+	return values, cobra.ShellCompDirectiveNoFileComp
 }
 
 func writeSessionsTable(app *application, result sessionsResult, longView bool) error {

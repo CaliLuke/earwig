@@ -1,0 +1,135 @@
+#!/bin/sh
+set -eu
+
+if [ "$(uname -s)" != "Darwin" ]; then
+  printf 'SKIP: verify-watch-processes uses macOS ps process-state semantics\n'
+  exit 0
+fi
+
+stress_seconds=${EARWIG_STRESS_SECONDS:-15}
+case "$stress_seconds" in
+  ''|*[!0-9]*|0)
+    printf 'EARWIG_STRESS_SECONDS must be a positive integer\n' >&2
+    exit 2
+    ;;
+esac
+
+repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+cd "$repo_root"
+stress_dir=$(mktemp -d "${TMPDIR:-/tmp}/earwig-watch-processes.XXXXXX")
+watcher_pid=
+
+cleanup() {
+  if [ -n "$watcher_pid" ] && kill -0 "$watcher_pid" 2>/dev/null; then
+    kill -TERM "$watcher_pid" 2>/dev/null || true
+    wait "$watcher_pid" 2>/dev/null || true
+  fi
+  case "$stress_dir" in
+    "${TMPDIR:-/tmp}"/earwig-watch-processes.*) rm -rf -- "$stress_dir" ;;
+    *) printf 'refusing to clean unexpected stress directory %s\n' "$stress_dir" >&2 ;;
+  esac
+}
+trap cleanup EXIT HUP INT TERM
+
+mkdir -p "$stress_dir/bin" "$stress_dir/home/.codex/sessions" \
+  "$stress_dir/home/.claude/projects" "$stress_dir/workspace"
+
+go build -o "$stress_dir/bin/earwig" ./cmd/earwig
+
+cat >"$stress_dir/bin/codex" <<'HELPER'
+#!/bin/sh
+IFS= read -r initialize || exit 2
+printf '{"id":1,"result":{}}\n'
+IFS= read -r initialized || exit 0
+IFS= read -r list || exit 0
+printf '{"id":2,"result":{"data":[]}}\n'
+while IFS= read -r request; do :; done
+HELPER
+chmod 0700 "$stress_dir/bin/codex"
+
+cat >"$stress_dir/config.toml" <<EOF
+workspace_roots = ["$stress_dir/workspace"]
+claude = false
+codex = true
+spool_path = "$stress_dir/spool.sqlite"
+jsondir = ""
+opik_url = ""
+active_poll_seconds = 1
+idle_poll_seconds = 1
+EOF
+
+tracked_children="$stress_dir/tracked-children"
+: >"$tracked_children"
+max_children=0
+
+run_phase() {
+  phase_signal=$1
+  phase_name=$2
+  env \
+    EARWIG_CONFIG="$stress_dir/config.toml" \
+    HOME="$stress_dir/home" \
+    CODEX_HOME="$stress_dir/home/.codex" \
+    PATH="$stress_dir/bin:$PATH" \
+    "$stress_dir/bin/earwig" watch >"$stress_dir/$phase_name.log" 2>&1 &
+  watcher_pid=$!
+
+  deadline=$(( $(date +%s) + stress_seconds ))
+  while [ "$(date +%s)" -lt "$deadline" ]; do
+    if ! kill -0 "$watcher_pid" 2>/dev/null; then
+      wait "$watcher_pid" || true
+      printf 'watcher exited early during %s\n' "$phase_name" >&2
+      cat "$stress_dir/$phase_name.log" >&2
+      exit 1
+    fi
+    snapshot=$(ps -axo ppid=,pid=,stat=,command=)
+    zombies=$(printf '%s\n' "$snapshot" |
+      awk -v ppid="$watcher_pid" '$1 == ppid && $3 ~ /^Z/ { print }')
+    if [ -n "$zombies" ]; then
+      printf 'zombie children found during %s:\n%s\n' "$phase_name" "$zombies" >&2
+      exit 1
+    fi
+    children=$(printf '%s\n' "$snapshot" |
+      awk -v ppid="$watcher_pid" '$1 == ppid { print $2 }')
+    child_count=0
+    for child_pid in $children; do
+      printf '%s\n' "$child_pid" >>"$tracked_children"
+      child_count=$((child_count + 1))
+    done
+    if [ "$child_count" -gt "$max_children" ]; then
+      max_children=$child_count
+    fi
+    sleep 0.05
+  done
+
+  kill "-$phase_signal" "$watcher_pid"
+  if ! wait "$watcher_pid"; then
+    printf 'watcher returned failure after %s\n' "$phase_name" >&2
+    cat "$stress_dir/$phase_name.log" >&2
+    exit 1
+  fi
+  if kill -0 "$watcher_pid" 2>/dev/null; then
+    printf 'watcher PID %s remained after %s\n' "$watcher_pid" "$phase_name" >&2
+    exit 1
+  fi
+  watcher_pid=
+}
+
+# The deterministic regression covers 1,000 rapid child lifecycles before
+# sampling the foreground watcher under both supported shutdown signals.
+go test ./internal/provider -run '^TestCodexRapidChildrenAreWaitedExactlyOnce$' -count=1
+run_phase INT sigint
+run_phase TERM sigterm
+
+sort -u "$tracked_children" | while IFS= read -r child_pid; do
+  if [ -n "$child_pid" ] && kill -0 "$child_pid" 2>/dev/null; then
+    printf 'child PID %s remained after watcher shutdown\n' "$child_pid" >&2
+    exit 1
+  fi
+done
+
+if [ "$max_children" -gt 1 ]; then
+  printf 'watcher child count was unbounded: observed %s concurrent children\n' "$max_children" >&2
+  exit 1
+fi
+
+printf 'PASS: 1,000 rapid exits reaped; zombie count stayed zero; max live children=%s; SIGINT/SIGTERM clean\n' "$max_children"

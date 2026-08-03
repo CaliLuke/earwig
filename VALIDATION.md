@@ -119,6 +119,19 @@ V5 — Daemon lifecycle (`scripts/verify-live`)
 - Hang resistance: with a stub helper that sleeps forever, the watch sweep
   times out, records the error in health, and the next trigger sweeps
   normally.
+- Process ownership: the deterministic provider regression starts and reaps
+  1,000 short-lived Codex children, and asserts that every `exec.Cmd` has a
+  `ProcessState` after close. The watcher scheduler test drives 100 restart
+  cycles with 25 concurrent events per cycle and asserts one active sweep.
+- Signal shutdown: hermetic CLI subprocess tests send SIGINT and SIGTERM. The
+  tests send each signal while a provider child runs. They make sure that the
+  watcher joins the sweep. They make sure that the watcher releases its lock.
+  They make sure that no child remains.
+- macOS zombie stress: `scripts/verify-watch-processes` samples `ps` during
+  foreground watcher runs. If a direct child becomes a zombie, the script
+  fails. It limits the number of concurrent children. It repeats clean shutdown
+  for SIGINT and SIGTERM. `EARWIG_STRESS_SECONDS` controls the duration of
+  each signal phase.
 - launchd simulation: `earwig sweep` run with `cwd=/` and environment
   reduced to `PATH=/usr/bin:/bin HOME=$HOME` still resolves the helper and
   config.

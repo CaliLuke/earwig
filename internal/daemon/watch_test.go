@@ -8,6 +8,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -131,5 +133,112 @@ func TestWatcherTimesOutSweepWithoutClaimingSuccess(t *testing.T) {
 	lastSuccess, err := s.GetHealth("last_sweep_success")
 	if err != nil || lastSuccess != `"old"` {
 		t.Fatalf("failed sweep advanced success: %q, %v", lastSuccess, err)
+	}
+}
+
+func TestWatcherSerializesRepeatedConcurrentRestartCycles(t *testing.T) {
+	const (
+		cycles         = 100
+		eventsPerCycle = 25
+	)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	entered := make(chan int, cycles)
+	release := make(chan struct{})
+	var active, maximum, started atomic.Int32
+	watcher := &Watcher{
+		SweepTimeout: time.Minute,
+		sweep: func(ctx context.Context) error {
+			current := active.Add(1)
+			for {
+				previous := maximum.Load()
+				if current <= previous || maximum.CompareAndSwap(previous, current) {
+					break
+				}
+			}
+			number := int(started.Add(1))
+			entered <- number
+			select {
+			case <-release:
+			case <-ctx.Done():
+			}
+			active.Add(-1)
+			return ctx.Err()
+		},
+	}
+	watcher.trigger(ctx)
+
+	for cycle := 1; cycle <= cycles; cycle++ {
+		select {
+		case number := <-entered:
+			if number != cycle {
+				t.Fatalf("restart number = %d, want %d", number, cycle)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("restart %d did not begin", cycle)
+		}
+		if cycle == cycles {
+			cancel()
+			break
+		}
+		var events sync.WaitGroup
+		events.Add(eventsPerCycle)
+		for event := 0; event < eventsPerCycle; event++ {
+			go func() {
+				defer events.Done()
+				watcher.trigger(ctx)
+			}()
+		}
+		events.Wait()
+		release <- struct{}{}
+	}
+	watcher.wait()
+
+	if got := started.Load(); got != cycles {
+		t.Fatalf("started %d sweeps, want %d", got, cycles)
+	}
+	if got := maximum.Load(); got != 1 {
+		t.Fatalf("maximum concurrent sweeps = %d, want 1", got)
+	}
+	if got := active.Load(); got != 0 {
+		t.Fatalf("%d sweeps still active after shutdown", got)
+	}
+}
+
+func TestWatchCancellationJoinsActiveSweep(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	started := make(chan struct{})
+	allowExit := make(chan struct{})
+	watcher := &Watcher{
+		SweepTimeout: time.Minute,
+		sweep: func(context.Context) error {
+			close(started)
+			<-allowExit
+			return nil
+		},
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- Watch(ctx, watcher, []string{t.TempDir()})
+	}()
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("startup sweep did not begin")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		t.Fatalf("Watch returned before active sweep exited: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(allowExit)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Watch did not return after active sweep exited")
 	}
 }

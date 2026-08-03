@@ -298,6 +298,35 @@ Commands and process model
   `$CODEX_HOME` controls the watched Codex sessions directory. Every setting
   has a working default; a missing config file is not an error.
 
+Child-process ownership invariant
+---------------------------------
+
+The watcher has exactly one sweep worker. File events and poll ticks can arrive
+during a sweep. These events set one dirty bit. The current worker consumes the
+bit. Then it performs the next sweep. No restart path replaces the worker or a
+provider handle.
+
+On watcher cancellation, the event loop creates no new work. It joins the
+worker. Then it releases the daemon lock and returns.
+
+Every successful provider `Start` transfers ownership of that child to one
+provider lifecycle object. That object has one `Wait` owner. It reports closure
+only after the child terminates and `Wait` completes.
+Natural exit, request failure, timeout, cancellation, restart, SIGINT,
+SIGTERM, and normal close all converge on the same waiter. A failed `Start`
+creates no ownership obligation.
+
+For the stdio Codex provider, the lifecycle object drains stdout. Then its sole
+waiter calls `Wait`. Provider work and process cleanup stay on the sweep worker.
+Thus, the watcher remains responsive.
+
+The macOS zombie leak violated this invariant: `CodexClient.Close` killed each
+`codex app-server` child and waited for stdout EOF, but never called
+`exec.Cmd.Wait`. Every Codex sweep therefore left one exited direct child
+owned by the long-running watcher. The fixed lifecycle has no compatibility
+path that can terminate a started Codex child without passing through its
+single waiter.
+
 Session IDs are validated (`^[0-9a-fA-F-]{36}$` UUID shape for Claude;
 `[A-Za-z0-9_-]{8,128}` for Codex thread IDs) and passed as argv everywhere —
 no shell interpolation of IDs or paths.

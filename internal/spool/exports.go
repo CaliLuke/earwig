@@ -27,6 +27,18 @@ func (s *Spool) Pending(exporter string, limit int) ([]Row, error) {
 	return s.queryRows(`SELECT t.trace_uuid,t.provider,t.session_id,t.turn_id,t.turn_status,t.started_at_ms,t.completed_at_ms,t.payload_json,t.content_hash,t.captured_at_ms FROM turns t LEFT JOIN exports e ON e.trace_uuid=t.trace_uuid AND e.exporter=? WHERE e.trace_uuid IS NULL OR e.content_hash<>t.content_hash ORDER BY t.started_at_ms LIMIT ?`, exporter, limit)
 }
 
+// RowsForSession returns all captured turns for one provider session in
+// chronological order. It does not consult or mutate automatic exporter
+// checkpoints, which keeps explicit selective exports independent.
+func (s *Spool) RowsForSession(provider, sessionID string) ([]Row, error) {
+	return s.queryRows(`
+		SELECT trace_uuid,provider,session_id,turn_id,turn_status,started_at_ms,completed_at_ms,payload_json,content_hash,captured_at_ms
+		FROM turns
+		WHERE provider=? AND session_id=?
+		ORDER BY started_at_ms, trace_uuid
+	`, provider, sessionID)
+}
+
 // PendingFor excludes only permanent failures for the same payload and
 // exporter target. A content change or target configuration change makes the
 // row eligible automatically.

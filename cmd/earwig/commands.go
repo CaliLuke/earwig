@@ -18,6 +18,7 @@ import (
 	"github.com/CaliLuke/earwig/internal/exporter"
 	"github.com/CaliLuke/earwig/internal/hooks"
 	"github.com/CaliLuke/earwig/internal/provider"
+	"github.com/CaliLuke/earwig/internal/spool"
 )
 
 const (
@@ -217,7 +218,8 @@ func newExportCommand(app *application) *cobra.Command {
 	var directory string
 	cmd := &cobra.Command{
 		Use:     "export",
-		Short:   "Export captured turns to a JSON directory",
+		Short:   "Export captured turns",
+		Long:    "Export captured turns to a JSON directory or send selected sessions directly to Opik.",
 		GroupID: inspectGroup,
 		Args:    cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
@@ -235,6 +237,90 @@ func newExportCommand(app *application) *cobra.Command {
 	}
 	cmd.Flags().StringVar(&directory, "dir", "", "directory to receive JSON files")
 	_ = cmd.MarkFlagRequired("dir")
+	cmd.AddCommand(newOpikExportCommand(app))
+	return cmd
+}
+
+func newOpikExportCommand(app *application) *cobra.Command {
+	var opikURL, project string
+	var sessionIDs []string
+	cmd := &cobra.Command{
+		Use:   "opik",
+		Short: "Export selected captured sessions to Opik",
+		Long: "Export only the selected sessions from Earwig's existing local spool directly to Opik. " +
+			"Session IDs may be full IDs or globally unique prefixes. This command does not capture new data or export unrelated pending sessions.",
+		Example: "  earwig export opik --url https://opik.example.ts.net --session 019fb35e\n" +
+			"  earwig export opik --url https://opik.example.ts.net --project review --session 019fb35e --session 029fb35e",
+		Args: cobra.NoArgs,
+		PreRunE: func(cmd *cobra.Command, _ []string) error {
+			// Let Cobra report its native required-flag errors before
+			// validating values that were actually provided.
+			if !cmd.Flags().Changed("url") || !cmd.Flags().Changed("session") {
+				return nil
+			}
+			opikURL = strings.TrimSpace(opikURL)
+			project = strings.TrimSpace(project)
+			if project == "" {
+				return fmt.Errorf("--project must not be empty")
+			}
+			for index := range sessionIDs {
+				sessionIDs[index] = strings.TrimSpace(sessionIDs[index])
+				if len(sessionIDs[index]) < 4 {
+					return fmt.Errorf("--session values must contain at least 4 characters")
+				}
+			}
+			return (exporter.Opik{URL: opikURL, ProjectName: project}).Validate()
+		},
+		RunE: func(_ *cobra.Command, _ []string) error {
+			store, err := app.openSpool()
+			if err != nil {
+				return err
+			}
+			rows := make([]spool.Row, 0)
+			selected := make(map[string]bool)
+			for _, requestedID := range sessionIDs {
+				session, findErr := store.FindSession(requestedID)
+				if findErr != nil {
+					return fmt.Errorf("resolve session %q: %w", requestedID, findErr)
+				}
+				key := session.Provider + "\x00" + session.SessionID
+				if selected[key] {
+					continue
+				}
+				sessionRows, rowsErr := store.RowsForSession(session.Provider, session.SessionID)
+				if rowsErr != nil {
+					return fmt.Errorf("load session %s: %w", session.SessionID, rowsErr)
+				}
+				if len(sessionRows) == 0 {
+					return fmt.Errorf("session %s has no captured turns to export", session.SessionID)
+				}
+				selected[key] = true
+				rows = append(rows, sessionRows...)
+			}
+			target := exporter.Opik{URL: opikURL, ProjectName: project}
+			if err = target.Export(rows); err != nil {
+				return fmt.Errorf("export selected sessions to Opik: %w", err)
+			}
+			_, err = fmt.Fprintf(
+				app.out,
+				"Exported %s %s from %s %s to Opik project %q.\n",
+				comma(len(rows)),
+				plural(len(rows), "turn", "turns"),
+				comma(len(selected)),
+				plural(len(selected), "session", "sessions"),
+				project,
+			)
+			return err
+		},
+	}
+	cmd.Flags().StringVar(&opikURL, "url", "", "Opik base URL")
+	cmd.Flags().StringVarP(&project, "project", "p", config.Default().OpikProject, "Opik project name")
+	cmd.Flags().StringArrayVarP(&sessionIDs, "session", "s", nil, "session ID or unique prefix (repeat for multiple sessions)")
+	_ = cmd.MarkFlagRequired("url")
+	_ = cmd.MarkFlagRequired("session")
+	_ = cmd.RegisterFlagCompletionFunc("session", func(_ *cobra.Command, _ []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		return completeSessionIDs(app, toComplete)
+	})
 	return cmd
 }
 

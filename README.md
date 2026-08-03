@@ -98,6 +98,21 @@ endpoint you trust. The tailnet transport protects traffic in transit, but
 access control and retention on the Opik host remain the operator's
 responsibility.
 
+To export only specific sessions without configuring the automatic Opik
+exporter, pass each captured session ID (or unique prefix) directly:
+
+```sh
+earwig export opik \
+  --url https://opik.your-tailnet.ts.net \
+  --project earwig \
+  --session 019fb35e \
+  --session 029fb35e
+```
+
+This explicit export reads the selected turns from the existing local spool.
+It does not recapture provider data, drain unrelated pending turns, or require
+a configuration file.
+
 ## Commands
 
 - `earwig sweep [--session <id>] [--provider codex|claude]` captures once.
@@ -112,6 +127,8 @@ responsibility.
 - `earwig hooks install|remove` manages Claude pre-compaction hooks.
 - `earwig prune --older-than <duration>` removes old, unprotected turns.
 - `earwig export --dir <path>` exports captured turns to JSON files.
+- `earwig export opik --url <url> --session <id>...` exports only selected
+  captured sessions directly to Opik.
 - `earwig install|uninstall` manages the macOS launchd or Linux systemd user
   service.
 - `earwig doctor` checks configuration, paths, and provider dependencies.
