@@ -36,7 +36,7 @@ JSON and SQLite outputs are under `~/.local/share/earwig`. Narrow
 
 ## Build and run
 
-Building from source requires Go 1.26.5 or newer and Node.js 18 or newer.
+Building from source requires Go 1.26.6 or newer and Node.js 18 or newer.
 
 ```sh
 npm ci --prefix helpers/claude-reader
