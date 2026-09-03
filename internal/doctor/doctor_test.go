@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/CaliLuke/earwig/internal/config"
+	"github.com/CaliLuke/earwig/internal/spool"
 )
 
 func TestRunReportsReadyWithPackagedDependencies(t *testing.T) {
@@ -53,5 +54,32 @@ func TestRunReportsMissingHelper(t *testing.T) {
 	var output bytes.Buffer
 	if err := Run(cfg, &output); err == nil || !strings.Contains(output.String(), "[error] Claude helper") {
 		t.Fatalf("doctor did not report missing helper: err=%v\n%s", err, output.String())
+	}
+}
+func TestRunReportsPersistedCaptureError(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("EARWIG_CONFIG", filepath.Join(dir, "missing-config.toml"))
+	cfg := config.Config{
+		WorkspaceRoots: []string{dir},
+		SpoolPath:      filepath.Join(dir, "spool.sqlite"),
+	}
+	store, err := spool.Open(cfg.SpoolPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = store.SetHealth("last_sweep_error", "fork/exec /old/claude-reader: no such file or directory"); err != nil {
+		t.Fatal(err)
+	}
+	if err = store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	var output bytes.Buffer
+	err = Run(cfg, &output)
+	if err == nil {
+		t.Fatalf("doctor reported ready despite capture error:\n%s", output.String())
+	}
+	if !strings.Contains(output.String(), "[error] last capture: fork/exec /old/claude-reader: no such file or directory") {
+		t.Fatalf("doctor did not surface capture error: err=%v\n%s", err, output.String())
 	}
 }

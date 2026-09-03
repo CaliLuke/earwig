@@ -131,7 +131,7 @@ a configuration file.
   captured sessions directly to Opik.
 - `earwig install|uninstall` manages the macOS launchd or Linux systemd user
   service.
-- `earwig doctor` checks configuration, paths, and provider dependencies.
+- `earwig doctor` checks configuration, paths, provider dependencies, and the latest capture result.
 - `earwig version` prints release build metadata.
 - `earwig completion bash|zsh|fish|powershell` generates shell completion.
 

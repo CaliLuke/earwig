@@ -2,6 +2,8 @@
 package doctor
 
 import (
+	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -11,6 +13,7 @@ import (
 	"runtime"
 
 	"github.com/CaliLuke/earwig/internal/config"
+	"github.com/CaliLuke/earwig/internal/spool"
 )
 
 func Run(cfg config.Config, out io.Writer) error {
@@ -59,7 +62,19 @@ func Run(cfg config.Config, out io.Writer) error {
 		report(err == nil, "Codex CLI", commandStatus("codex", err))
 	}
 
-	report(filepath.IsAbs(cfg.SpoolPath), "spool", cfg.SpoolPath)
+	if !filepath.IsAbs(cfg.SpoolPath) {
+		report(false, "spool", cfg.SpoolPath)
+	} else {
+		captureError, err := readCaptureError(cfg.SpoolPath)
+		detail := cfg.SpoolPath
+		if err != nil {
+			detail += ": " + err.Error()
+		}
+		report(err == nil, "spool", detail)
+		if err == nil && captureError != "" {
+			report(false, "last capture", captureError)
+		}
+	}
 	if cfg.JSONDir != "" {
 		report(filepath.IsAbs(cfg.JSONDir), "JSON exporter", cfg.JSONDir)
 	}
@@ -98,4 +113,27 @@ func commandStatus(name string, err error) string {
 	}
 	path, _ := exec.LookPath(name)
 	return path
+}
+func readCaptureError(path string) (string, error) {
+	store, err := spool.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = store.Close() }()
+
+	raw, err := store.GetHealth("last_sweep_error")
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	var captureError *string
+	if err = json.Unmarshal([]byte(raw), &captureError); err != nil {
+		return "", err
+	}
+	if captureError == nil {
+		return "", nil
+	}
+	return *captureError, nil
 }
