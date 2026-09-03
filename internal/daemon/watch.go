@@ -174,6 +174,29 @@ func (w *Watcher) wait() {
 	}
 }
 
+func addWatchTree(watcher *fsnotify.Watcher, root string) error {
+	var watchErrors []error
+	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			watchErrors = append(watchErrors, err)
+			return nil
+		}
+		if d.IsDir() {
+			if err = watcher.Add(path); err != nil {
+				watchErrors = append(watchErrors, err)
+			}
+		}
+		return nil
+	})
+	return errors.Join(append(watchErrors, err)...)
+}
+
+func (w *Watcher) noteWatchError(err error) {
+	if err != nil && w.Sweeper != nil {
+		w.Sweeper.note("watch_error", err.Error())
+	}
+}
+
 func Watch(ctx context.Context, w *Watcher, paths []string) error {
 	f, e := fsnotify.NewWatcher()
 	if e != nil {
@@ -181,12 +204,7 @@ func Watch(ctx context.Context, w *Watcher, paths []string) error {
 	}
 	defer func() { _ = f.Close() }()
 	for _, p := range paths {
-		_ = filepath.WalkDir(p, func(path string, d os.DirEntry, err error) error {
-			if err == nil && d.IsDir() {
-				_ = f.Add(path)
-			}
-			return nil
-		})
+		_ = addWatchTree(f, p)
 	}
 	w.trigger(ctx)
 	var activePollSeconds, idlePollSeconds int
@@ -215,11 +233,15 @@ func Watch(ctx context.Context, w *Watcher, paths []string) error {
 			w.wait()
 			return nil
 		case e := <-f.Errors:
-			if e != nil {
-				w.Sweeper.note("watch_error", e.Error())
-			}
+			w.noteWatchError(e)
 		case ev := <-f.Events:
 			if ev.Name != "" {
+				if ev.Has(fsnotify.Create) {
+					info, err := os.Stat(ev.Name)
+					if err == nil && info.IsDir() {
+						w.noteWatchError(addWatchTree(f, ev.Name))
+					}
+				}
 				lastChange = time.Now()
 				debounce.Reset(2 * time.Second)
 			}

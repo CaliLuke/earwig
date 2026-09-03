@@ -242,3 +242,47 @@ func TestWatchCancellationJoinsActiveSweep(t *testing.T) {
 		t.Fatal("Watch did not return after active sweep exited")
 	}
 }
+
+func TestWatchRegistersDirectoriesCreatedAfterStartup(t *testing.T) {
+	root := t.TempDir()
+	ctx, cancel := context.WithCancel(context.Background())
+	swept := make(chan struct{}, 3)
+	watcher := &Watcher{
+		SweepTimeout: time.Minute,
+		sweep: func(context.Context) error {
+			swept <- struct{}{}
+			return nil
+		},
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- Watch(ctx, watcher, []string{root})
+	}()
+	t.Cleanup(func() {
+		cancel()
+		if err := <-done; err != nil {
+			t.Errorf("Watch returned an error: %v", err)
+		}
+	})
+
+	waitForSweep := func(reason string) {
+		t.Helper()
+		select {
+		case <-swept:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("no sweep after %s", reason)
+		}
+	}
+	waitForSweep("startup")
+
+	nested := filepath.Join(root, "new", "nested")
+	if err := os.MkdirAll(nested, 0700); err != nil {
+		t.Fatal(err)
+	}
+	waitForSweep("creating a nested directory")
+
+	if err := os.WriteFile(filepath.Join(nested, "session.jsonl"), []byte("complete"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	waitForSweep("writing inside the new directory")
+}
