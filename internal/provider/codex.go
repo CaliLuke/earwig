@@ -1,7 +1,6 @@
 package provider
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -50,13 +49,11 @@ func StartCodex(ctx context.Context, cwd string) (*CodexClient, error) {
 	}
 	go func() {
 		defer close(x.stdoutDone)
-		scan := bufio.NewScanner(out)
-		buf := make([]byte, 1024*1024)
-		scan.Buffer(buf, 128*1024*1024)
-		for scan.Scan() {
+		decoder := json.NewDecoder(out)
+		for {
 			var m map[string]any
-			if json.Unmarshal(scan.Bytes(), &m) != nil {
-				continue
+			if decoder.Decode(&m) != nil {
+				return
 			}
 			id, ok := m["id"].(float64)
 			if !ok {
@@ -146,17 +143,20 @@ func (x *CodexClient) notify(method string, params any) {
 	}
 }
 func (x *CodexClient) List(ctx context.Context) ([]map[string]any, error) {
+	return x.listPages(ctx, "thread/list", map[string]any{
+		"limit":         100,
+		"sortKey":       "updated_at",
+		"sortDirection": "desc",
+	})
+}
+
+func (x *CodexClient) listPages(ctx context.Context, method string, params map[string]any) ([]map[string]any, error) {
 	items := []map[string]any{}
-	cursor := ""
 	seenCursors := map[string]bool{}
 	for {
-		params := map[string]any{"limit": 100, "sortKey": "updated_at", "sortDirection": "desc"}
-		if cursor != "" {
-			params["cursor"] = cursor
-		}
-		r, e := x.request(ctx, "thread/list", params)
-		if e != nil {
-			return nil, e
+		r, err := x.request(ctx, method, params)
+		if err != nil {
+			return nil, err
 		}
 		result := obj(r)
 		items = append(items, maps(result["data"])...)
@@ -165,24 +165,66 @@ func (x *CodexClient) List(ctx context.Context) ([]map[string]any, error) {
 			return items, nil
 		}
 		if seenCursors[next] {
-			return nil, fmt.Errorf("codex app-server returned repeated thread/list cursor")
+			return nil, fmt.Errorf("codex app-server returned repeated %s cursor", method)
 		}
 		seenCursors[next] = true
-		cursor = next
+		params["cursor"] = next
 	}
 }
+
 func (x *CodexClient) Read(ctx context.Context, id string) (map[string]any, error) {
 	if !ValidCodexID(id) {
 		return nil, fmt.Errorf("invalid Codex thread ID")
 	}
-	r, e := x.request(ctx, "thread/read", map[string]any{"threadId": id, "includeTurns": true})
-	if e != nil {
-		return nil, e
+	r, err := x.request(ctx, "thread/read", map[string]any{"threadId": id, "includeTurns": false})
+	if err != nil {
+		return nil, err
 	}
 	thread, ok := obj(r)["thread"].(map[string]any)
 	if !ok {
 		return nil, fmt.Errorf("codex app-server contract drift: thread/read omitted thread")
 	}
+	turns, err := x.listPages(ctx, "thread/turns/list", map[string]any{
+		"threadId":      id,
+		"limit":         100,
+		"sortDirection": "asc",
+		"itemsView":     "notLoaded",
+	})
+	if err != nil {
+		return nil, err
+	}
+	turnByID := make(map[string]map[string]any, len(turns))
+	rawTurns := make([]any, len(turns))
+	for index, turn := range turns {
+		turnID, _ := turn["id"].(string)
+		if turnID == "" {
+			return nil, fmt.Errorf("codex app-server contract drift: thread/turns/list omitted turn ID")
+		}
+		turn["items"] = []any{}
+		turnByID[turnID] = turn
+		rawTurns[index] = turn
+	}
+	if len(turns) > 0 {
+		entries, listErr := x.listPages(ctx, "thread/items/list", map[string]any{
+			"threadId":      id,
+			"limit":         100,
+			"sortDirection": "asc",
+		})
+		if listErr != nil {
+			return nil, listErr
+		}
+		for _, entry := range entries {
+			turnID, _ := entry["turnId"].(string)
+			turn := turnByID[turnID]
+			item, found := entry["item"]
+			turnItems, validItems := turn["items"].([]any)
+			if turn == nil || !found || !validItems {
+				return nil, fmt.Errorf("codex app-server contract drift: thread/items/list returned an invalid entry")
+			}
+			turn["items"] = append(turnItems, item)
+		}
+	}
+	thread["turns"] = rawTurns
 	return thread, nil
 }
 

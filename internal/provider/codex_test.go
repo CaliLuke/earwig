@@ -82,6 +82,99 @@ func TestCodexListDiscoversAllDirectoriesWithPagination(t *testing.T) {
 	}
 }
 
+func TestCodexReadPaginatesTurnsAndItems(t *testing.T) {
+	const threadID = "019fb35e-cd1f-72c1-b95f-f265043655ec"
+	client := &CodexClient{
+		in:        make(chan []byte),
+		responses: map[float64]chan map[string]any{},
+		next:      1,
+	}
+	requests := make(chan map[string]any, 5)
+	results := []map[string]any{
+		{"thread": map[string]any{"id": threadID, "turns": []any{}}},
+		{"data": []any{map[string]any{"id": "turn-1", "status": "completed", "items": []any{}}}, "nextCursor": "turn-page-2"},
+		{"data": []any{map[string]any{"id": "turn-2", "status": "completed", "items": []any{}}}},
+		{"data": []any{
+			map[string]any{"turnId": "turn-1", "item": map[string]any{"id": "item-1"}},
+			map[string]any{"turnId": "turn-2", "item": map[string]any{"id": "item-2"}},
+		}, "nextCursor": "item-page-2"},
+		{"data": []any{map[string]any{"turnId": "turn-1", "item": map[string]any{"id": "item-3"}}}},
+	}
+	go func() {
+		defer close(requests)
+		for _, result := range results {
+			body := <-client.in
+			var request map[string]any
+			if err := json.Unmarshal(body, &request); err != nil {
+				return
+			}
+			requests <- request
+			id, _ := request["id"].(float64)
+			client.mu.Lock()
+			response := client.responses[id]
+			client.mu.Unlock()
+			response <- map[string]any{"result": result}
+		}
+	}()
+
+	thread, err := client.Read(context.Background(), threadID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	turns, _ := thread["turns"].([]any)
+	if len(turns) != 2 {
+		t.Fatalf("turn count = %d, want 2", len(turns))
+	}
+	wantItemIDs := [][]string{{"item-1", "item-3"}, {"item-2"}}
+	for index, rawTurn := range turns {
+		turn, _ := rawTurn.(map[string]any)
+		items, _ := turn["items"].([]any)
+		var itemIDs []string
+		for _, rawItem := range items {
+			item, _ := rawItem.(map[string]any)
+			itemID, _ := item["id"].(string)
+			itemIDs = append(itemIDs, itemID)
+		}
+		if fmt.Sprint(itemIDs) != fmt.Sprint(wantItemIDs[index]) {
+			t.Fatalf("turn %d item IDs = %v, want %v", index, itemIDs, wantItemIDs[index])
+		}
+	}
+
+	var sent []map[string]any
+	for request := range requests {
+		sent = append(sent, request)
+	}
+	wantMethods := []string{"thread/read", "thread/turns/list", "thread/turns/list", "thread/items/list", "thread/items/list"}
+	if len(sent) != len(wantMethods) {
+		t.Fatalf("request count = %d, want %d", len(sent), len(wantMethods))
+	}
+	for index, want := range wantMethods {
+		if sent[index]["method"] != want {
+			t.Fatalf("request %d method = %v, want %s", index, sent[index]["method"], want)
+		}
+	}
+	readParams, _ := sent[0]["params"].(map[string]any)
+	if readParams["includeTurns"] != false {
+		t.Fatalf("thread/read includeTurns = %v, want false", readParams["includeTurns"])
+	}
+	turnPageOne, _ := sent[1]["params"].(map[string]any)
+	turnPageTwo, _ := sent[2]["params"].(map[string]any)
+	itemPageOne, _ := sent[3]["params"].(map[string]any)
+	itemPageTwo, _ := sent[4]["params"].(map[string]any)
+	if turnPageOne["itemsView"] != "notLoaded" || turnPageOne["sortDirection"] != "asc" || turnPageOne["cursor"] != nil {
+		t.Fatalf("first turn page params = %#v", turnPageOne)
+	}
+	if turnPageTwo["cursor"] != "turn-page-2" {
+		t.Fatalf("second turn page cursor = %v", turnPageTwo["cursor"])
+	}
+	if itemPageOne["sortDirection"] != "asc" || itemPageOne["cursor"] != nil {
+		t.Fatalf("first item page params = %#v", itemPageOne)
+	}
+	if itemPageTwo["cursor"] != "item-page-2" {
+		t.Fatalf("second item page cursor = %v", itemPageTwo["cursor"])
+	}
+}
+
 func TestCodexRapidChildrenAreWaitedExactlyOnce(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("test helper is a POSIX shell script")

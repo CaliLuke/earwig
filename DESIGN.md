@@ -170,9 +170,9 @@ and zero duplicates downstream (deterministic IDs).
 | idle poll: 5 min | ≤5 min | staleness bound |
 | startup catch-up sweep | at start/wake | downtime recovery |
 
-Codex has no compaction-loss window (`thread/read` returns full history;
-verify empirically in stage A and record the result); its freshness is
-convenience. The trigger stack exists for Claude.
+Codex has no compaction-loss window. Earwig reads thread metadata, then pages
+through turns and items in ascending order. This returns the full history
+without one unbounded JSON-RPC response. The trigger stack exists for Claude.
 
 ### Hooks are opt-in, tool-managed
 

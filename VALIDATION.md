@@ -71,6 +71,8 @@ V3 — Hermetic end-to-end (`scripts/verify`)
 - Planner: provider listing is global. Workspace roots include nested sessions
   and exclude outside sessions. A second sweep with unchanged mtimes performs
   zero provider reads. A changed session produces one read.
+- Codex reads request metadata without turns. Separate paginated requests
+  rebuild turns and items in ascending order. No full-history response is used.
 - Spool migrations: opening a spool seeded with legacy whole-transcript rows
   and legacy hashed-Codex rows converts both; opening it a second time is a
   no-op (idempotent).
