@@ -185,6 +185,16 @@ func sessionFilterSQL(filter SessionFilter) (string, []any) {
 					AND turn_search.session_id = s.session_id
 					AND turn_search MATCH ?
 			))
+			OR (? <> '' AND EXISTS (
+				SELECT 1 FROM turns unindexed_turn
+				WHERE unindexed_turn.provider = s.provider
+					AND unindexed_turn.session_id = s.session_id
+					AND NOT EXISTS (
+						SELECT 1 FROM turn_search indexed_turn
+						WHERE indexed_turn.rowid = unindexed_turn.rowid
+					)
+					AND INSTR(LOWER(unindexed_turn.payload_json), LOWER(?)) > 0
+			))
 		)
 	`
 	args := []any{
@@ -194,6 +204,7 @@ func sessionFilterSQL(filter SessionFilter) (string, []any) {
 		filter.Project, filter.Project, filter.Project, filter.Project,
 		filter.Search, filter.Search, filter.Search, filter.Search,
 		contentSearch, contentSearch,
+		filter.Search, filter.Search,
 	}
 	return where, args
 }

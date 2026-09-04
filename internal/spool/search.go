@@ -1,7 +1,8 @@
 package spool
 
-// ensureTurnSearch creates a trigram FTS5 index over normalized turn payloads.
-// Triggers keep the index in the same transaction as each turn mutation.
+// ensureTurnSearch creates a trigram FTS5 index for new and changed turns.
+// Existing unindexed turns use a read-only fallback so opening a large spool
+// never blocks the daemon on a one-time index build.
 func (s *Spool) ensureTurnSearch() error {
 	_, err := s.db.Exec(`
 		CREATE VIRTUAL TABLE IF NOT EXISTS turn_search USING fts5(
@@ -24,10 +25,6 @@ func (s *Spool) ensureTurnSearch() error {
 			INSERT INTO turn_search(rowid,trace_uuid,provider,session_id,content)
 			VALUES (new.rowid,new.trace_uuid,new.provider,new.session_id,new.payload_json);
 		END;
-		INSERT INTO turn_search(rowid,trace_uuid,provider,session_id,content)
-		SELECT t.rowid,t.trace_uuid,t.provider,t.session_id,t.payload_json
-		FROM turns t
-		WHERE NOT EXISTS (SELECT 1 FROM turn_search AS indexed_turn WHERE indexed_turn.rowid=t.rowid);
 	`)
 	return err
 }

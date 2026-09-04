@@ -207,3 +207,37 @@ func TestListSessionsFiltersMinimumTurnsAndIndexedContent(t *testing.T) {
 		t.Fatalf("deleted indexed search: stats=%#v sessions=%#v err=%v", stats, got, err)
 	}
 }
+
+func TestSearchFindsLegacyContentWithoutStartupBackfill(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "spool.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	if _, err = s.db.Exec(`
+		DROP TRIGGER turn_search_insert;
+		DROP TRIGGER turn_search_delete;
+		DROP TRIGGER turn_search_update;
+		DROP TABLE turn_search;
+		INSERT INTO sessions(provider,session_id,cwd,summary,last_modified_ms)
+		VALUES('codex-app-server','legacy-session','/work/project','ordinary title',1);
+		INSERT INTO turns(trace_uuid,provider,session_id,turn_id,turn_status,started_at_ms,completed_at_ms,payload_json,content_hash,captured_at_ms)
+		VALUES('legacy-trace','codex-app-server','legacy-session','legacy-turn','completed',1,2,'{"turn":{"final_answer":"legacy searchable phrase"}}','legacy-hash',3);
+	`); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.ensureTurnSearch(); err != nil {
+		t.Fatal(err)
+	}
+	var indexed int
+	if err = s.db.QueryRow(`SELECT COUNT(*) FROM turn_search`).Scan(&indexed); err != nil {
+		t.Fatal(err)
+	}
+	if indexed != 0 {
+		t.Fatalf("startup backfilled %d legacy turns", indexed)
+	}
+	got, stats, err := s.ListSessions(SessionFilter{Search: "legacy searchable phrase", Limit: 20})
+	if err != nil || stats.Total != 1 || len(got) != 1 || got[0].SessionID != "legacy-session" {
+		t.Fatalf("legacy search: stats=%#v sessions=%#v err=%v", stats, got, err)
+	}
+}
