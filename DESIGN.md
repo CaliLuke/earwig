@@ -1,10 +1,10 @@
 earwig — a bug that listens to your agents
 ==========================================
 
-A local, always-on daemon that captures completed Codex and Claude Code
-turns as they happen, spools them durably, and exports them to evaluation
-backends (Opik first). Personal tool first; staged toward a brew-distributable
-binary other people can install and get value from with zero configuration.
+A local, always-on daemon that captures completed Codex, Claude Code, and OMP
+turns as they happen. It stores them durably and exports them to evaluation
+backends (Opik first). The initial use is personal. The release is a
+brew-distributable binary that works with zero configuration.
 
 The name: an earwig is literally a bug, and "earwigging" is slang for
 eavesdropping. This is a small bug planted next to your agents, quietly
@@ -45,8 +45,9 @@ own provider readers or normalizers.
 
 - Recovering turns that complete *and* compact entirely while the daemon is
   down. Impossible through supported surfaces; detected and reported instead.
-- Parsing `~/.claude/projects/**/*.jsonl` or `$CODEX_HOME/sessions` content.
-  File events and mtimes are trigger signals; file content is never read.
+- Parsing undocumented Claude or Codex session files. File events and mtimes
+  are trigger signals for those providers. OMP publishes its JSONL entry model,
+  so Earwig reads that documented format directly.
 - Capturing in-flight or user-interrupted turns.
 - Cloud sync, multi-user service, telemetry, or unconfigured network egress.
 - Being an eval platform. Review, annotation, datasets, and experiments live
@@ -67,16 +68,14 @@ Resolution — split resident from transient:
 
 ```text
 earwig (Go, resident)                    helpers (transient, per sweep)
-─────────────────────────────                  ─────────────────────────────
+─────────────────────────────            ─────────────────────────────
 fs watchers (fsnotify, paths only)
 poll timers, debounce, serialization
 spool (SQLite via modernc.org/sqlite, no CGo)
 exporters (Opik HTTP(S), JSON dir)
-health/state, gap detection            ──┬──▶  claude-reader: Node + pinned
-codex app-server JSON-RPC client         │     Agent SDK; list/read commands;
-  (spawned subprocess, stdio)            │     JSON on stdout; exits when done
-                                         └──▶  codex app-server subprocess
-                                               (spawned for the sweep, stdio)
+health/state, gap detection            ──┬──▶ claude-reader: pinned Agent SDK
+Codex app-server JSON-RPC client         └──▶ codex app-server subprocess
+OMP documented JSONL reader
 ```
 
 - The Go daemon idles with watchers and timers only. Helpers exist solely
@@ -92,6 +91,8 @@ codex app-server JSON-RPC client         │     Agent SDK; list/read commands;
   clean `npm ci`.
 - Codex needs no helper: app-server speaks JSON-RPC over stdio
   (`initialize`, `thread/list`, `thread/read`), which Go handles natively.
+- OMP needs no helper or subprocess. The Go reader scans valid session headers
+  under `omp_sessions_path` and follows the active `parentId` branch.
 - Distribution: the brew formula ships the Go binary plus the helper as a
   `bun compile` single-file binary (no Node runtime dependency for users).
   During development the helper runs via `node`. The default helper path is
@@ -111,14 +112,12 @@ Earwig owns one versioned provider-independent contract:
   `{id, status, started_at, completed_at, duration_ms, user_messages[],
   assistant_messages[] (kind: text|thinking), final_answer, trajectory[],
   following_user_messages[], error}`.
-- **Turn status:** `completed` (`end_turn`/`stop_sequence`), `failed`
-  (`refusal`/`max_tokens`/`model_context_window_exceeded`), `interrupted`,
-  `in_flight`. Only completed/failed are spooled.
-- **Trace IDs:** Claude uses deterministic UUIDv7 — 48-bit turn-start ms,
-  version/variant bits, and 74 bits of SHA-256 over
-  `provider \x1f session_id \x1f turn_id`, including a UTC rule for naive
-  timestamps. Codex uses the native turn UUIDv7;
-  synthetic/non-UUIDv7 fixture IDs fall back to the deterministic scheme.
+- **Turn status:** `completed`, `failed`, `interrupted`, or `in_flight`.
+  Only completed and failed turns enter the spool. Provider stop reasons map to
+  these shared values.
+- **Trace IDs:** Claude and OMP use deterministic UUIDv7 values. The inputs are
+  the turn-start time, provider, session ID, and turn ID. Codex uses the native
+  turn UUIDv7. Synthetic Codex IDs use the deterministic scheme.
   This deliberate split preserves identity continuity with previously captured
   traces. Opening an older spool migrates hashed Codex rows to native IDs and
   requeues them once under the compatible identity.
@@ -127,10 +126,9 @@ Earwig owns one versioned provider-independent contract:
   payloads replaced by placeholders; policy is stamped into every transcript
   as `capture` metadata. Configurable; the public-release default flips to
   conservative (see Staging).
-- **Compaction markers:** the Claude summary-continuation message (stable
-  lead sentence) is recorded as a compaction boundary, never as a turn.
-  Synthetic user inputs (command echoes, task notifications, interrupt
-  markers) are flagged and excluded from redirect evidence.
+- **Compaction markers:** Claude summary messages and OMP `compaction` entries
+  become session metadata, not turns. Synthetic Claude inputs are flagged and
+  excluded from redirect evidence.
 
 Contract fixtures: a JSON fixture set (raw provider payload → expected
 normalized transcript, including trace UUIDs) is checked into this repository.
@@ -261,7 +259,7 @@ known daemon blind window, and is exempt. No fuzzier heuristics.
 Commands and process model
 --------------------------
 
-- `earwig sweep [--session <id>] [--provider codex|claude]` — one
+- `earwig sweep [--session <id>] [--provider codex|claude|omp]` — one
   sweep; also what hooks call; works with the daemon stopped.
 - `earwig watch` — foreground daemon; single instance via exclusive
   OS advisory lock next to the spool (second invocation exits 2 with holder

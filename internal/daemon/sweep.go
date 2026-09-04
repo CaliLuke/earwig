@@ -48,6 +48,16 @@ func (s *Sweeper) Sweep(ctx context.Context, o SweepOptions) error {
 			s.note("codex_error", nil)
 		}
 	}
+	if s.Config.OMP && (o.Provider == "" || o.Provider == "omp") {
+		if e := s.omp(o, now); e != nil {
+			if first == nil {
+				first = e
+			}
+			s.note("omp_error", e.Error())
+		} else {
+			s.note("omp_error", nil)
+		}
+	}
 	for _, e := range s.exporters() {
 		if err := exporter.Drain(s.Spool, e); err != nil {
 			s.note("exporter_"+e.Name()+"_behind", err.Error())
@@ -176,6 +186,44 @@ func (s *Sweeper) codex(ctx context.Context, o SweepOptions, now time.Time) erro
 		}
 	}
 	return errors.Join(readErrors...)
+}
+
+func (s *Sweeper) omp(o SweepOptions, now time.Time) error {
+	if len(s.Config.WorkspaceRoots) == 0 {
+		return nil
+	}
+	list, listErr := provider.ListOMP(s.Config.OMPSessionsPath)
+	var readErrors []error
+	for _, item := range list {
+		if o.Session != "" && item.ID != o.Session {
+			continue
+		}
+		if !config.Allowed(s.Config, item.CWD) {
+			continue
+		}
+		if o.Session == "" {
+			changed, planErr := s.Spool.SessionNeedsSweep("omp-session-file", item.ID, item.LastModified)
+			if planErr != nil {
+				return planErr
+			}
+			if !changed {
+				continue
+			}
+		}
+		file, err := provider.ReadOMP(item.Path)
+		if err != nil {
+			readErrors = append(readErrors, fmt.Errorf("read OMP session %s: %w", item.ID, err))
+			continue
+		}
+		transcript, err := normalizer.NormalizeOMP(file.Header, file.Entries, file.LastModified)
+		if err == nil {
+			_, err = s.Spool.UpsertTranscript(transcript, now)
+		}
+		if err != nil {
+			return err
+		}
+	}
+	return errors.Join(append(readErrors, listErr)...)
 }
 
 // gap is intentionally the one documented predicate, without heuristic inference.

@@ -7,3 +7,4 @@ var codexID = regexp.MustCompile(`^[A-Za-z0-9_-]{8,128}$`)
 
 func ValidClaudeID(v string) bool { return claudeID.MatchString(v) }
 func ValidCodexID(v string) bool  { return codexID.MatchString(v) }
+func ValidOMPID(v string) bool    { return claudeID.MatchString(v) }

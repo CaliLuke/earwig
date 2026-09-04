@@ -33,6 +33,26 @@ type Turn struct {
 	Error                 *any             `json:"error,omitempty"`
 }
 
+func makeTurn(id, status string, started, ended any, users, assistant, trajectory []map[string]any, errorValue *any) Turn {
+	var duration any
+	if started != nil && ended != nil {
+		duration = parseMS(ended, 0) - parseMS(started, 0)
+	}
+	return Turn{
+		ID:                    id,
+		Status:                status,
+		StartedAt:             started,
+		CompletedAt:           ended,
+		DurationMS:            duration,
+		UserMessages:          users,
+		AssistantMessages:     assistant,
+		FinalAnswer:           final(assistant, status),
+		Trajectory:            trajectory,
+		FollowingUserMessages: []map[string]any{},
+		Error:                 errorValue,
+	}
+}
+
 func str(m map[string]any, k string) string { x, _ := m[k].(string); return x }
 func arr(v any) []any                       { x, _ := v.([]any); return x }
 func obj(v any) map[string]any              { x, _ := v.(map[string]any); return x }

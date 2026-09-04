@@ -75,7 +75,7 @@ func traceID(source, sessionID string, turn normalizer.Turn, fallback int64) str
 			return native
 		}
 	}
-	provider := map[string]string{"claude-code-agent-sdk": "claude-code", "codex-app-server": "codex"}[source]
+	provider := map[string]string{"claude-code-agent-sdk": "claude-code", "codex-app-server": "codex", "omp-session-file": "omp"}[source]
 	return normalizer.TraceID(provider, sessionID, turn, fallback)
 }
 

@@ -194,10 +194,11 @@ func TestProviderAndLimitValidation(t *testing.T) {
 		args []string
 		want string
 	}{
-		{[]string{"sessions", "--provider", "other"}, "--provider must be claude or codex"},
+		{[]string{"sessions", "--provider", "other"}, "--provider must be claude, codex, or omp"},
 		{[]string{"sessions", "--limit", "0"}, "--limit must be between 1 and 1000"},
 		{[]string{"sessions", "show", "abc"}, "at least 4 characters"},
 		{[]string{"sweep", "--session", "abc"}, "--session requires --provider"},
+		{[]string{"sweep", "--provider", "omp", "--session", "abc"}, "invalid omp session ID"},
 	} {
 		assertCLIError(t, test.args, test.want)
 	}

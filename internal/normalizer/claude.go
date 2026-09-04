@@ -125,11 +125,7 @@ func (w *claudeWork) done(last bool) Turn {
 	} else if last {
 		status = "in_flight"
 	}
-	d := any(nil)
-	if w.started != nil && w.ended != nil {
-		d = parseMS(w.ended, 0) - parseMS(w.started, 0)
-	}
-	return Turn{ID: w.id, Status: status, StartedAt: w.started, CompletedAt: w.ended, DurationMS: d, UserMessages: w.users, AssistantMessages: w.assist, FinalAnswer: final(w.assist, status), Trajectory: w.trajectory, FollowingUserMessages: []map[string]any{}}
+	return makeTurn(w.id, status, w.started, w.ended, w.users, w.assist, w.trajectory, nil)
 }
 
 // NormalizeClaude maps raw getSessionInfo/getSessionMessages payloads, never on-disk files.

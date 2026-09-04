@@ -33,7 +33,7 @@ func newRootCommand(app *application) *cobra.Command {
 	root := &cobra.Command{
 		Use:          "earwig",
 		Short:        "Capture and inspect local AI coding sessions",
-		Long:         "Earwig captures local Claude and Codex sessions into a private spool, then exports them to configured destinations.",
+		Long:         "Earwig captures local Claude, Codex, and OMP sessions into a private spool, then exports them to configured destinations.",
 		Version:      build,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -83,7 +83,8 @@ func newSweepCommand(app *application) *cobra.Command {
 				return fmt.Errorf("--session requires --provider")
 			}
 			if session != "" && ((providerName == "claude" && !provider.ValidClaudeID(session)) ||
-				(providerName == "codex" && !provider.ValidCodexID(session))) {
+				(providerName == "codex" && !provider.ValidCodexID(session)) ||
+				(providerName == "omp" && !provider.ValidOMPID(session))) {
 				return fmt.Errorf("invalid %s session ID", providerName)
 			}
 			return nil
@@ -104,7 +105,7 @@ func newSweepCommand(app *application) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&session, "session", "", "capture only this session ID")
-	cmd.Flags().StringVarP(&providerName, "provider", "p", "", "capture only one provider (claude or codex)")
+	cmd.Flags().StringVarP(&providerName, "provider", "p", "", "capture only one provider (claude, codex, or omp)")
 	_ = cmd.RegisterFlagCompletionFunc("provider", providerCompletion)
 	return cmd
 }
@@ -137,7 +138,7 @@ func newWatchCommand(app *application) *cobra.Command {
 			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
 			home, _ := os.UserHomeDir()
-			paths := []string{filepath.Join(home, ".claude", "projects"), config.CodexSessionsPath()}
+			paths := []string{filepath.Join(home, ".claude", "projects"), config.CodexSessionsPath(), cfg.OMPSessionsPath}
 			return daemon.Watch(ctx, &daemon.Watcher{Sweeper: sw, Spool: store}, paths)
 		},
 	}
@@ -433,12 +434,12 @@ func newCompletionCommand(root *cobra.Command) *cobra.Command {
 }
 
 func providerCompletion(_ *cobra.Command, _ []string, _ string) ([]string, cobra.ShellCompDirective) {
-	return []string{"claude\tClaude Code", "codex\tCodex"}, cobra.ShellCompDirectiveNoFileComp
+	return []string{"claude\tClaude Code", "codex\tCodex", "omp\tOh My Pi"}, cobra.ShellCompDirectiveNoFileComp
 }
 
 func validateProvider(name string) error {
-	if name != "" && name != "claude" && name != "codex" {
-		return fmt.Errorf("--provider must be claude or codex")
+	if name != "" && name != "claude" && name != "codex" && name != "omp" {
+		return fmt.Errorf("--provider must be claude, codex, or omp")
 	}
 	return nil
 }

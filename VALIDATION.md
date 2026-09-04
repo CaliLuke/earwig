@@ -60,18 +60,17 @@ V2 — Versioned capture-contract fixtures (`scripts/verify`)
 V3 — Hermetic end-to-end (`scripts/verify`)
 -------------------------------------------
 
-- A temp `CLAUDE_CONFIG_DIR` is built from recorded real-session JSONL
-  fixtures; the helper and a sweep run against it with an isolated spool and
-  jsondir exporter. Assert: turn counts, statuses, in-flight exclusion,
-  redirect linkage, secret redaction, and compaction markers.
+- A temporary Claude directory uses recorded real-session fixtures. The helper
+  and a sweep use an isolated spool and JSON exporter. The assertions cover
+  turn status, in-flight exclusion, redirect links, redaction, and compaction.
+- OMP fixtures cover file discovery, active branches, tool results, changed
+  files, and completed-turn capture.
 - Gap predicate, end-to-end truth table: a compaction occurring after a
   prior successful sweep of that session produces exactly one warning; the
   first-ever sweep of an already-compacted session produces zero.
-- Planner: provider listing is global and paginated, a session nested beneath
-  a workspace root is included, and sessions outside every root are excluded.
-  A second sweep with unchanged mtimes performs **zero provider reads**
-  (asserted via a helper invocation counter); touching one session produces
-  exactly one read.
+- Planner: provider listing is global. Workspace roots include nested sessions
+  and exclude outside sessions. A second sweep with unchanged mtimes performs
+  zero provider reads. A changed session produces one read.
 - Spool migrations: opening a spool seeded with legacy whole-transcript rows
   and legacy hashed-Codex rows converts both; opening it a second time is a
   no-op (idempotent).
@@ -150,10 +149,9 @@ V6 — User-state safety invariants (`scripts/verify`, fixture copies only)
   by hash.
 - Tests never touch `~/.claude/settings.json`: a harness guard fails the
   suite if the settings path resolves outside the test temp directory.
-- Supported-surface tripwire: a check greps the Go tree for
-  `os.Open`/`os.ReadFile`/`bufio` usage on paths containing
-  `.claude/projects` or `sessions` outside the fsnotify watch-registration
-  code, and fails on any match.
+- Supported-surface tripwire: a check rejects direct reads of undocumented
+  Claude and Codex session files. The OMP reader is exempt because OMP
+  documents its JSONL entry model.
 - Opik URL tripwire: exporter URL validation accepts loopback, Tailscale IP,
   and MagicDNS hosts, follows valid remote redirects, and rejects credentialed
   URLs, missing hosts, and unsupported schemes.

@@ -61,6 +61,10 @@ func Run(cfg config.Config, out io.Writer) error {
 		_, err := exec.LookPath("codex")
 		report(err == nil, "Codex CLI", commandStatus("codex", err))
 	}
+	if cfg.OMP {
+		info, err := os.Stat(cfg.OMPSessionsPath)
+		report(err == nil && info.IsDir(), "OMP sessions", pathStatus(cfg.OMPSessionsPath, info, err))
+	}
 
 	if !filepath.IsAbs(cfg.SpoolPath) {
 		report(false, "spool", cfg.SpoolPath)

@@ -13,6 +13,8 @@ type Config struct {
 	WorkspaceRoots    []string `toml:"workspace_roots"`
 	Claude            bool     `toml:"claude"`
 	Codex             bool     `toml:"codex"`
+	OMP               bool     `toml:"omp"`
+	OMPSessionsPath   string   `toml:"omp_sessions_path"`
 	SpoolPath         string   `toml:"spool_path"`
 	JSONDir           string   `toml:"jsondir"`
 	OpikURL           string   `toml:"opik_url"`
@@ -28,7 +30,7 @@ func Default() Config {
 	if project == "" {
 		project = "earwig"
 	}
-	return Config{WorkspaceRoots: []string{h}, Claude: true, Codex: true, SpoolPath: filepath.Join(h, ".local", "share", "earwig", "spool.sqlite"), JSONDir: filepath.Join(h, ".local", "share", "earwig", "json"), OpikProject: project, ClaudeHelper: defaultClaudeHelper(), ActivePollSeconds: 15, IdlePollSeconds: 300}
+	return Config{WorkspaceRoots: []string{h}, Claude: true, Codex: true, OMP: true, OMPSessionsPath: DefaultOMPSessionsPath(), SpoolPath: filepath.Join(h, ".local", "share", "earwig", "spool.sqlite"), JSONDir: filepath.Join(h, ".local", "share", "earwig", "json"), OpikProject: project, ClaudeHelper: defaultClaudeHelper(), ActivePollSeconds: 15, IdlePollSeconds: 300}
 }
 func Path() string {
 	if p := os.Getenv("EARWIG_CONFIG"); p != "" {
@@ -60,6 +62,7 @@ func Load() (Config, error) {
 	c.SpoolPath = absoluteFrom(base, c.SpoolPath)
 	c.JSONDir = absoluteFrom(base, c.JSONDir)
 	c.ClaudeHelper = absoluteFrom(base, c.ClaudeHelper)
+	c.OMPSessionsPath = absoluteFrom(base, c.OMPSessionsPath)
 	if c.SpoolPath == "" {
 		return c, fmt.Errorf("spool_path must not be empty")
 	}
@@ -111,6 +114,31 @@ func CodexSessionsPath() string {
 		home = filepath.Join(userHome, ".codex")
 	}
 	return filepath.Join(filepath.Clean(home), "sessions")
+}
+
+func DefaultOMPSessionsPath() string {
+	home, _ := os.UserHomeDir()
+	configRoot := os.Getenv("PI_CONFIG_DIR")
+	if configRoot == "" {
+		configRoot = filepath.Join(home, ".omp")
+	} else if !filepath.IsAbs(configRoot) {
+		configRoot = filepath.Join(home, configRoot)
+	}
+	profile, configured := os.LookupEnv("OMP_PROFILE")
+	if !configured {
+		profile = os.Getenv("PI_PROFILE")
+	}
+	profile = strings.TrimSpace(profile)
+	if profile != "" && profile != "default" {
+		return filepath.Join(configRoot, "profiles", filepath.Base(profile), "agent", "sessions")
+	}
+	if agentDir := os.Getenv("PI_CODING_AGENT_DIR"); agentDir != "" {
+		if !filepath.IsAbs(agentDir) {
+			agentDir = filepath.Join(home, agentDir)
+		}
+		return filepath.Join(filepath.Clean(agentDir), "sessions")
+	}
+	return filepath.Join(filepath.Clean(configRoot), "agent", "sessions")
 }
 func Allowed(c Config, cwd string) bool {
 	cwd = filepath.Clean(cwd)

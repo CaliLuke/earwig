@@ -73,7 +73,7 @@ func newSessionsCommand(app *application) *cobra.Command {
 			return writeSessionsTable(app, result, longView)
 		},
 	}
-	cmd.Flags().StringVarP(&providerName, "provider", "p", "", "show one provider (claude or codex)")
+	cmd.Flags().StringVarP(&providerName, "provider", "p", "", "show one provider (claude, codex, or omp)")
 	cmd.Flags().StringVar(&project, "project", "", "show sessions whose workspace ends with this project name")
 	cmd.Flags().StringVarP(&search, "search", "s", "", "search titles, workspaces, and session IDs")
 	cmd.Flags().IntVarP(&limit, "limit", "n", 20, "maximum number of sessions to show")
@@ -147,7 +147,7 @@ func writeSessionsTable(app *application, result sessionsResult, longView bool) 
 		}
 		_, err := fmt.Fprintln(app.out, message)
 		if err == nil && !result.Filtered {
-			_, err = fmt.Fprintln(app.out, "Run `earwig sweep` to capture available Claude and Codex sessions.")
+			_, err = fmt.Fprintln(app.out, "Run `earwig sweep` to capture available Claude, Codex, and OMP sessions.")
 		}
 		return err
 	}
@@ -445,6 +445,8 @@ func providerSource(name string) string {
 		return "claude-code-agent-sdk"
 	case "codex":
 		return "codex-app-server"
+	case "omp":
+		return "omp-session-file"
 	default:
 		return ""
 	}
@@ -456,6 +458,8 @@ func friendlyProvider(source string) string {
 		return "Claude"
 	case "codex-app-server":
 		return "Codex"
+	case "omp-session-file":
+		return "OMP"
 	default:
 		return source
 	}

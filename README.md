@@ -1,8 +1,8 @@
 # Earwig
 
-Earwig is a standalone, local, always-on daemon that captures completed Codex
-and Claude Code turns, stores them durably in SQLite, and exports them to JSON
-files or [Opik](https://www.comet.com/docs/opik/).
+Earwig is a standalone, local daemon that captures completed turns from Codex,
+Claude Code, and OMP. It stores turns in SQLite and exports them to JSON files
+or [Opik](https://www.comet.com/docs/opik/).
 
 Capture is independent of exporter availability: if Opik is unreachable,
 Earwig keeps the turns in its local spool and retries them on a later sweep.
@@ -33,6 +33,9 @@ default. Its default workspace root is your home directory and its default
 JSON and SQLite outputs are under `~/.local/share/earwig`. Narrow
 `workspace_roots`, disable an exporter, or change the output paths in
 `~/.config/earwig/config.toml` before starting the service if desired.
+
+Earwig reads OMP sessions from `~/.omp/agent/sessions` by default. Set
+`omp_sessions_path` when OMP stores the active profile in a different path.
 
 ## Build and run
 
@@ -65,6 +68,8 @@ addresses and MagicDNS names. For example:
 workspace_roots = ["/Users/you/Documents/code"]
 claude = true
 codex = true
+omp = true
+omp_sessions_path = "/Users/you/.omp/agent/sessions"
 
 opik_url = "http://100.64.0.10:5173"
 opik_project = "earwig"
@@ -115,7 +120,7 @@ a configuration file.
 
 ## Commands
 
-- `earwig sweep [--session <id>] [--provider codex|claude]` captures once.
+- `earwig sweep [--session <id>] [--provider codex|claude|omp]` captures once.
 - `earwig watch` runs the foreground daemon.
 - `earwig sessions` lists recently active sessions by project and title. Filter
   with `--project`, `--search`, `--provider`, or `--warnings`; use `--long` for

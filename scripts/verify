@@ -147,7 +147,9 @@ go test -v ./internal/spool -run 'TestCodexTraceIdentityReferenceVectors'
 printf 'PASS versioned Earwig canonical fixtures and trace-ID vectors\n'
 
 section 'V3 hermetic end-to-end'
-go test -v ./internal/daemon -run 'TestHermeticClaudeSDKEndToEnd|TestClaudeSweepReadsOnlyNewOrChangedSessions|TestGapDetectionExemptsFirstSeenSession'
+go test -v ./internal/daemon -run 'TestHermeticClaudeSDKEndToEnd|TestClaudeSweepReadsOnlyNewOrChangedSessions|TestGapDetectionExemptsFirstSeenSession|TestOMPSweepCapturesChangedCompletedTurns'
+go test -v ./internal/provider -run 'TestListAndReadOMPFiles|TestListOMPMissingRootIsEmpty'
+go test -v ./internal/normalizer -run 'TestNormalizeOMPBuildsActiveBranchTurns'
 go test -v ./internal/spool -run 'TestOpenMigratesLegacyWholeTranscriptPayload|TestOpenMigratesCodexTraceIDsAndQueuesNativeExport'
 printf 'PASS hermetic provider, planner, gap, and migration checks\n'
 
