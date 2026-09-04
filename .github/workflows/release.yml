@@ -30,9 +30,10 @@ jobs:
         run: ./scripts/install-dev-tools
       - name: Verify release source
         run: ./scripts/verify
+      - name: Verify live integration
+        run: ./scripts/verify-live
       - name: Audit release dependencies
         run: ./scripts/verify-security
-
   build:
     needs: validate
     strategy:

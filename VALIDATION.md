@@ -16,11 +16,11 @@ Rules
 2. Hermetic and live behavioral checks are wired into two entry points:
    - `scripts/verify` — hermetic. No network, no real user directories, no
      Opik, no provider binaries required. Runs everywhere, always.
-   - `scripts/verify-live` — integration against the configured Opik endpoint
-     and real on-disk sessions read-only. Must use an isolated spool file and
-     a dedicated Opik project. Must never start a model conversation or bill
-     anything. Skips cleanly (with an explicit SKIP line per item) when a
-     dependency is down.
+   - `scripts/verify-live` — integration against a configured Opik endpoint or
+     an isolated, pinned Testcontainers stack when no endpoint is configured. It
+     uses an isolated spool file and a dedicated Opik project. It never starts a
+     model conversation or bills anything. An unavailable dependency fails the
+     applicable test; Opik integration tests must not skip.
    Release dependency checks are wired into `scripts/verify-security`. This
    third entry point is network-dependent by design and runs before releases,
    not in the offline commit gate.

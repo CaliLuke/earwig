@@ -15,7 +15,7 @@ func (s *Spool) queryRows(query string, args ...any) ([]Row, error) {
 	out := []Row{}
 	for rows.Next() {
 		var r Row
-		if e = rows.Scan(&r.TraceUUID, &r.Provider, &r.SessionID, &r.TurnID, &r.Status, &r.StartedMS, &r.CompletedMS, &r.Payload, &r.Hash, &r.CapturedMS); e != nil {
+		if e = scanRow(rows, &r); e != nil {
 			return nil, e
 		}
 		out = append(out, r)
@@ -37,6 +37,39 @@ func (s *Spool) RowsForSession(provider, sessionID string) ([]Row, error) {
 		WHERE provider=? AND session_id=?
 		ORDER BY started_at_ms, trace_uuid
 	`, provider, sessionID)
+}
+
+// WalkRows visits every captured turn in chronological order without loading
+// the complete spool into memory. The returned count includes successful visits.
+func (s *Spool) WalkRows(visit func(Row) error) (int, error) {
+	rows, err := s.db.Query(`
+		SELECT trace_uuid,provider,session_id,turn_id,turn_status,started_at_ms,completed_at_ms,payload_json,content_hash,captured_at_ms
+		FROM turns
+		ORDER BY started_at_ms, trace_uuid
+	`)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = rows.Close() }()
+	count := 0
+	for rows.Next() {
+		var row Row
+		if err = scanRow(rows, &row); err != nil {
+			return count, err
+		}
+		if err = visit(row); err != nil {
+			return count, err
+		}
+		count++
+	}
+	return count, rows.Err()
+}
+
+func scanRow(scanner rowScanner, row *Row) error {
+	return scanner.Scan(
+		&row.TraceUUID, &row.Provider, &row.SessionID, &row.TurnID, &row.Status,
+		&row.StartedMS, &row.CompletedMS, &row.Payload, &row.Hash, &row.CapturedMS,
+	)
 }
 
 // PendingFor excludes only permanent failures for the same payload and

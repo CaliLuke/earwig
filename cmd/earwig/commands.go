@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -54,6 +55,7 @@ func newRootCommand(app *application) *cobra.Command {
 		newSweepCommand(app),
 		newWatchCommand(app),
 		newSessionsCommand(app),
+		newTurnsCommand(app),
 		newStatusCommand(app),
 		newExportCommand(app),
 		newStopCommand(app),
@@ -220,7 +222,7 @@ func newExportCommand(app *application) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "export",
 		Short:   "Export captured turns",
-		Long:    "Export captured turns to a JSON directory or send selected sessions directly to Opik.",
+		Long:    "Capture available sessions, then export every captured turn to a JSON directory.",
 		GroupID: inspectGroup,
 		Args:    cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
@@ -228,15 +230,35 @@ func newExportCommand(app *application) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			sw.Config.JSONDir = directory
+			// Explicit directory exports are snapshots. Automatic exporter
+			// checkpoints must not hide rows written to a different directory.
+			sw.Config.JSONDir = ""
 			sw.Config.OpikURL = ""
-			if err = sw.Sweep(context.Background(), daemon.SweepOptions{}); err != nil {
-				_, _ = fmt.Fprintln(app.err, "earwig:", err)
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+			defer cancel()
+			captureErr := sw.Sweep(ctx, daemon.SweepOptions{})
+
+			target := exporter.JSONDir{Dir: directory}
+			if err = target.Health(); err != nil {
+				return errors.Join(fmt.Errorf("prepare export directory: %w", err), captureErr)
+			}
+			exported, exportErr := sw.Spool.WalkRows(target.WriteRow)
+			if exportErr != nil {
+				return errors.Join(
+					fmt.Errorf("export stopped after %d %s: %w", exported, plural(exported, "turn", "turns"), exportErr),
+					captureErr,
+				)
+			}
+			if _, err = fmt.Fprintf(app.out, "Exported %s %s to %s.\n", comma(exported), plural(exported, "turn", "turns"), directory); err != nil {
+				return errors.Join(err, captureErr)
+			}
+			if captureErr != nil {
+				return fmt.Errorf("capture before export failed: %w", captureErr)
 			}
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&directory, "dir", "", "directory to receive JSON files")
+	cmd.Flags().StringVar(&directory, "dir", "", "directory to receive all captured turns as JSON files")
 	_ = cmd.MarkFlagRequired("dir")
 	cmd.AddCommand(newOpikExportCommand(app))
 	return cmd

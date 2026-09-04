@@ -21,25 +21,39 @@ binary="$live_tmp/earwig"
 v4_output="$live_tmp/v4.log"
 v5_output="$live_tmp/v5.log"
 go build -o "$binary" ./cmd/earwig
-printf 'EARWIG_OPIK_URL=%s\n' "${EARWIG_OPIK_URL:-http://127.0.0.1:5173}"
+if [ -n "${EARWIG_OPIK_URL:-}" ]; then
+  printf 'EARWIG_OPIK_URL=%s (configured)\n' "$EARWIG_OPIK_URL"
+else
+  printf 'EARWIG_OPIK_URL=Testcontainers (%s)\n' 'Opik 2.2.52'
+fi
 
 run_group() {
   label=$1
   pattern=$2
   group_output=$3
+  use_opik=$4
   printf '\n=== %s ===\n' "$label"
-  if EARWIG_LIVE_BIN="$binary" EARWIG_OPIK_URL="${EARWIG_OPIK_URL:-http://127.0.0.1:5173}" \
-    go test -tags=live -v ./internal/livevalidation -run "$pattern" -count=1 >"$group_output" 2>&1; then
-    cat "$group_output"
+  status=0
+  if [ "$use_opik" -eq 1 ]; then
+    EARWIG_LIVE_BIN="$binary" EARWIG_OPIK_TESTCONTAINERS=1 \
+      go test -tags=live -v ./internal/livevalidation -run "$pattern" -count=1 >"$group_output" 2>&1 || status=$?
   else
-    status=$?
-    cat "$group_output"
+    EARWIG_LIVE_BIN="$binary" \
+      go test -tags=live -v ./internal/livevalidation -run "$pattern" -count=1 >"$group_output" 2>&1 || status=$?
+  fi
+  cat "$group_output"
+  if [ "$status" -ne 0 ]; then
     exit "$status"
   fi
 }
 
-run_group 'V4 live Opik integration' '^TestV4' "$v4_output"
-run_group 'V5 daemon lifecycle' '^TestV5' "$v5_output"
+run_group 'V4 live Opik integration' '^TestV4' "$v4_output" 1
+v4_skip_count=$(grep -c -- '--- SKIP:' "$v4_output" || true)
+if [ "$v4_skip_count" -ne 0 ]; then
+  printf 'V4 FAIL: %s Opik integration test(s) skipped\n' "$v4_skip_count" >&2
+  exit 1
+fi
+run_group 'V5 daemon lifecycle' '^TestV5' "$v5_output" 0
 
 skip_count=$(cat "$v4_output" "$v5_output" | grep -c -- '--- SKIP:' || true)
 if [ "$skip_count" -eq 0 ]; then

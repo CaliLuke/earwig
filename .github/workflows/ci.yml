@@ -32,5 +32,7 @@ jobs:
         run: ./scripts/install-dev-tools
       - name: Verify
         run: ./scripts/verify
+      - name: Live integration
+        run: ./scripts/verify-live
       - name: Package smoke test
         run: ./scripts/verify-distribution

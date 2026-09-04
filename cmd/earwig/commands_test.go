@@ -3,9 +3,11 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -180,8 +182,8 @@ func TestSessionsHelpDocumentsInspectionFlags(t *testing.T) {
 		t.Fatalf("exit=%d stderr=%s", exitCode, stderr.String())
 	}
 	for _, want := range []string{
-		"--provider", "--project", "--search", "--limit", "--warnings", "--long", "--json",
-		"show", "without loading or printing",
+		"--provider", "--project", "--search", "--limit", "--min-turns", "--warnings", "--long", "--json",
+		"captured content", "show", "without loading or printing",
 	} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Errorf("sessions help omitted %q:\n%s", want, stdout.String())
@@ -196,6 +198,8 @@ func TestProviderAndLimitValidation(t *testing.T) {
 	}{
 		{[]string{"sessions", "--provider", "other"}, "--provider must be claude, codex, or omp"},
 		{[]string{"sessions", "--limit", "0"}, "--limit must be between 1 and 1000"},
+		{[]string{"sessions", "--min-turns", "-1"}, "--min-turns must not be negative"},
+		{[]string{"turns", "abc"}, "at least 4 characters"},
 		{[]string{"sessions", "show", "abc"}, "at least 4 characters"},
 		{[]string{"sweep", "--session", "abc"}, "--session requires --provider"},
 		{[]string{"sweep", "--provider", "omp", "--session", "abc"}, "invalid omp session ID"},
@@ -370,5 +374,154 @@ func TestStatusPreservesScriptFriendlyDaemonLine(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "daemon: stopped\n") {
 		t.Fatalf("status omitted stable daemon line:\n%s", stdout.String())
+	}
+}
+
+func TestDirectoryExportWritesEveryCapturedTurnWithoutCheckpoints(t *testing.T) {
+	store, err := spool.Open(filepath.Join(t.TempDir(), "spool.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Config{SpoolPath: store.Path}
+	var stdout, stderr bytes.Buffer
+	app := &application{in: strings.NewReader(""), out: &stdout, err: &stderr, cfg: &cfg, spool: store}
+	defer app.close()
+
+	var first spool.Row
+	for index := 0; index < 501; index++ {
+		row := spool.Row{
+			TraceUUID: fmt.Sprintf("trace-%03d", index), Provider: "codex-app-server",
+			SessionID: "large-session", TurnID: fmt.Sprintf("turn-%03d", index),
+			Status: "completed", StartedMS: int64(index), CompletedMS: int64(index + 1),
+			Payload: fmt.Sprintf(`{"schema_version":1,"source":"codex-app-server","session":{"id":"large-session"},"turn":{"id":"turn-%03d","trajectory":[]}}`, index),
+			Hash:    fmt.Sprintf("hash-%03d", index), CapturedMS: int64(index + 2),
+		}
+		if err = store.StoreRow(row); err != nil {
+			t.Fatal(err)
+		}
+		if index == 0 {
+			first = row
+		}
+	}
+	if err = store.MarkExported("jsondir", []spool.Row{first}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+
+	destination := filepath.Join(t.TempDir(), "snapshot")
+	root := newRootCommand(app)
+	root.SetArgs([]string{"export", "--dir", destination})
+	if err = root.Execute(); err != nil {
+		t.Fatalf("export: %v\nstderr=%s", err, stderr.String())
+	}
+	files, err := filepath.Glob(filepath.Join(destination, "codex-app-server", "large-session", "*.json"))
+	if err != nil || len(files) != 501 {
+		t.Fatalf("files=%d err=%v", len(files), err)
+	}
+	if !strings.Contains(stdout.String(), "Exported 501 turns to "+destination+".") {
+		t.Fatalf("stdout=%s", stdout.String())
+	}
+	checkpoints, err := store.ExportCount("jsondir")
+	if err != nil || checkpoints != 1 {
+		t.Fatalf("automatic checkpoints changed: count=%d err=%v", checkpoints, err)
+	}
+}
+
+func TestDirectoryExportReportsCaptureAndWriteFailures(t *testing.T) {
+	t.Run("capture", func(t *testing.T) {
+		store, err := spool.Open(filepath.Join(t.TempDir(), "spool.sqlite"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		row := spool.Row{TraceUUID: "trace", Provider: "omp-session-file", SessionID: "session", TurnID: "turn", Status: "completed", Payload: `{"schema_version":1,"source":"omp-session-file","session":{"id":"session"},"turn":{"id":"turn"}}`, Hash: "hash"}
+		if err = store.StoreRow(row); err != nil {
+			t.Fatal(err)
+		}
+		cfg := config.Config{SpoolPath: store.Path, Claude: true, WorkspaceRoots: []string{"/work"}, ClaudeHelper: filepath.Join(t.TempDir(), "missing-helper")}
+		var stdout, stderr bytes.Buffer
+		app := &application{in: strings.NewReader(""), out: &stdout, err: &stderr, cfg: &cfg, spool: store}
+		defer app.close()
+		destination := filepath.Join(t.TempDir(), "snapshot")
+		root := newRootCommand(app)
+		root.SetArgs([]string{"export", "--dir", destination})
+		if err = root.Execute(); err == nil || !strings.Contains(err.Error(), "capture before export failed") {
+			t.Fatalf("capture error=%v stderr=%s", err, stderr.String())
+		}
+		if _, statErr := os.Stat(filepath.Join(destination, "omp-session-file", "session", "trace.json")); statErr != nil {
+			t.Fatalf("existing turn was not exported: %v", statErr)
+		}
+		if !strings.Contains(stdout.String(), "Exported 1 turn") {
+			t.Fatalf("stdout=%s", stdout.String())
+		}
+	})
+
+	t.Run("write", func(t *testing.T) {
+		store, err := spool.Open(filepath.Join(t.TempDir(), "spool.sqlite"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		cfg := config.Config{SpoolPath: store.Path}
+		var stdout, stderr bytes.Buffer
+		app := &application{in: strings.NewReader(""), out: &stdout, err: &stderr, cfg: &cfg, spool: store}
+		defer app.close()
+		destination := filepath.Join(t.TempDir(), "not-a-directory")
+		if err = os.WriteFile(destination, []byte("file"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		root := newRootCommand(app)
+		root.SetArgs([]string{"export", "--dir", destination})
+		if err = root.Execute(); err == nil || !strings.Contains(err.Error(), "prepare export directory") {
+			t.Fatalf("write error=%v stderr=%s", err, stderr.String())
+		}
+	})
+}
+
+func TestTurnsListsAndPrintsCapturedContent(t *testing.T) {
+	store, err := spool.Open(filepath.Join(t.TempDir(), "spool.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Config{SpoolPath: store.Path, JSONDir: filepath.Join(t.TempDir(), "json")}
+	var stdout, stderr bytes.Buffer
+	app := &application{in: strings.NewReader(""), out: &stdout, err: &stderr, cfg: &cfg, spool: store}
+	defer app.close()
+	sessionID := "019fb35e-cd1f-72c1-b95f-f265043655ec"
+	transcript := normalizer.Transcript{
+		SchemaVersion: 1,
+		Source:        "codex-app-server",
+		Session:       map[string]any{"id": sessionID, "cwd": "/work/project", "name": "Inspect turns", "created_at": int64(1000), "updated_at": int64(4000)},
+		Turns: []normalizer.Turn{{
+			ID: "turn-one", Status: "completed", StartedAt: int64(1000), CompletedAt: int64(2500), DurationMS: int64(1500),
+			UserMessages: []map[string]any{{"content": "run the checks"}}, FinalAnswer: "done",
+			Trajectory: []map[string]any{{"type": "commandExecution", "command": "go test ./..."}},
+		}},
+	}
+	if _, err = store.UpsertTranscript(transcript, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+
+	root := newRootCommand(app)
+	root.SetArgs([]string{"turns", sessionID[:8]})
+	if err = root.Execute(); err != nil {
+		t.Fatalf("list turns: %v\nstderr=%s", err, stderr.String())
+	}
+	for _, want := range []string{"TURN", "turn-one", "1.5s", "1 turn", "JSON files: " + cfg.JSONDir} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Errorf("turn list omitted %q:\n%s", want, stdout.String())
+		}
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	root = newRootCommand(app)
+	root.SetArgs([]string{"turns", sessionID[:8], "--turn", "turn-o", "--json"})
+	if err = root.Execute(); err != nil {
+		t.Fatalf("show turn: %v\nstderr=%s", err, stderr.String())
+	}
+	var payload spool.TurnPayload
+	if err = json.Unmarshal(stdout.Bytes(), &payload); err != nil {
+		t.Fatalf("decode output: %v\n%s", err, stdout.String())
+	}
+	if payload.Turn.ID != "turn-one" || len(payload.Turn.UserMessages) != 1 || len(payload.Turn.Trajectory) != 1 {
+		t.Fatalf("payload=%#v", payload.Turn)
 	}
 }

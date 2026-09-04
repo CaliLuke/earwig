@@ -122,10 +122,14 @@ a configuration file.
 
 - `earwig sweep [--session <id>] [--provider codex|claude|omp]` captures once.
 - `earwig watch` runs the foreground daemon.
-- `earwig sessions` lists recently active sessions by project and title. Filter
-  with `--project`, `--search`, `--provider`, or `--warnings`; use `--long` for
-  full paths and IDs or `--json` for scripts.
+- `earwig sessions` lists recent sessions by project and title. `--search`
+  matches metadata and indexed captured content. Filter with `--project`,
+  `--provider`, `--min-turns`, or `--warnings`. Use `--long` for full
+  paths and IDs, or use `--json` for scripts.
 - `earwig sessions show <id-prefix>` shows complete metadata for one session.
+- `earwig turns <id-prefix>` lists captured turns and shows the configured JSON
+  directory. Add `--turn <id>` to print one normalized turn. Add `--json` for
+  machine-readable output.
 - `earwig sessions acknowledge <id-prefix>` clears one reviewed gap warning.
   Use `--all` to clear all reviewed warnings. Captured turns remain unchanged.
 - `earwig status` reports daemon, capture, and exporter health in a readable
@@ -133,7 +137,9 @@ a configuration file.
 - `earwig stop` stops the running daemon.
 - `earwig hooks install|remove` manages Claude pre-compaction hooks.
 - `earwig prune --older-than <duration>` removes old, unprotected turns.
-- `earwig export --dir <path>` exports captured turns to JSON files.
+- `earwig export --dir <path>` captures once, then writes every captured turn
+  to the directory. It reports the turn count and returns an error if capture or
+  writing fails.
 - `earwig export opik --url <url> --session <id>...` exports only selected
   captured sessions directly to Opik.
 - `earwig install|uninstall` manages the macOS launchd or Linux systemd user

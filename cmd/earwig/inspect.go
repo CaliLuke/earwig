@@ -27,14 +27,14 @@ type sessionsResult struct {
 
 func newSessionsCommand(app *application) *cobra.Command {
 	var providerName, project, search string
-	var limit int
+	var limit, minTurns int
 	var warningsOnly, longView, asJSON bool
 	cmd := &cobra.Command{
 		Use:     "sessions",
 		Aliases: []string{"list"},
 		Short:   "List captured sessions",
 		Long:    "List sessions in Earwig's local spool without loading or printing their captured content.",
-		Example: "  earwig sessions\n  earwig sessions --project earwig\n  earwig sessions --search \"smart capture\"\n  earwig sessions --warnings\n  earwig sessions show 019fb35e",
+		Example: "  earwig sessions\n  earwig sessions --project earwig --min-turns 1\n  earwig sessions --search \"command failed\"\n  earwig sessions --warnings\n  earwig sessions show 019fb35e",
 		GroupID: inspectGroup,
 		Args:    cobra.NoArgs,
 		PreRunE: func(_ *cobra.Command, _ []string) error {
@@ -43,6 +43,9 @@ func newSessionsCommand(app *application) *cobra.Command {
 			}
 			if limit < 1 || limit > 1000 {
 				return fmt.Errorf("--limit must be between 1 and 1000")
+			}
+			if minTurns < 0 {
+				return fmt.Errorf("--min-turns must not be negative")
 			}
 			return nil
 		},
@@ -56,6 +59,7 @@ func newSessionsCommand(app *application) *cobra.Command {
 				Project:         project,
 				Search:          search,
 				GapWarningsOnly: warningsOnly,
+				MinTurns:        minTurns,
 				Limit:           limit,
 			})
 			if err != nil {
@@ -65,7 +69,7 @@ func newSessionsCommand(app *application) *cobra.Command {
 				Total:       total.Total,
 				GapWarnings: total.GapWarnings,
 				Sessions:    sessions,
-				Filtered:    providerName != "" || project != "" || search != "" || warningsOnly,
+				Filtered:    providerName != "" || project != "" || search != "" || warningsOnly || minTurns > 0,
 			}
 			if asJSON {
 				return writeJSON(app.out, result)
@@ -75,8 +79,9 @@ func newSessionsCommand(app *application) *cobra.Command {
 	}
 	cmd.Flags().StringVarP(&providerName, "provider", "p", "", "show one provider (claude, codex, or omp)")
 	cmd.Flags().StringVar(&project, "project", "", "show sessions whose workspace ends with this project name")
-	cmd.Flags().StringVarP(&search, "search", "s", "", "search titles, workspaces, and session IDs")
+	cmd.Flags().StringVarP(&search, "search", "s", "", "search titles, workspaces, IDs, and captured content")
 	cmd.Flags().IntVarP(&limit, "limit", "n", 20, "maximum number of sessions to show")
+	cmd.Flags().IntVar(&minTurns, "min-turns", 0, "show sessions with at least this many captured turns")
 	cmd.Flags().BoolVar(&warningsOnly, "warnings", false, "show only sessions with capture gap warnings")
 	cmd.Flags().BoolVarP(&longView, "long", "l", false, "show full paths, IDs, timestamps, and state")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "print machine-readable JSON")
@@ -90,12 +95,7 @@ func newSessionShowCommand(app *application) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "show <session-id-or-prefix>",
 		Short: "Show full metadata for one captured session",
-		Args: cobra.MatchAll(cobra.ExactArgs(1), func(_ *cobra.Command, args []string) error {
-			if len(args) == 1 && len(args[0]) < 4 {
-				return fmt.Errorf("session ID prefix must contain at least 4 characters")
-			}
-			return nil
-		}),
+		Args:  cobra.MatchAll(cobra.ExactArgs(1), validateSessionPrefix),
 		RunE: func(_ *cobra.Command, args []string) error {
 			store, err := app.openSpool()
 			if err != nil {
@@ -119,6 +119,13 @@ func newSessionShowCommand(app *application) *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&asJSON, "json", false, "print machine-readable JSON")
 	return cmd
+}
+
+func validateSessionPrefix(_ *cobra.Command, args []string) error {
+	if len(args) == 1 && len(args[0]) < 4 {
+		return fmt.Errorf("session ID prefix must contain at least 4 characters")
+	}
+	return nil
 }
 
 func newSessionAcknowledgeCommand(app *application) *cobra.Command {

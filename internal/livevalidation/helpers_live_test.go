@@ -60,7 +60,7 @@ func opikAvailable() error {
 func requireOpik(t *testing.T) {
 	t.Helper()
 	if err := opikAvailable(); err != nil {
-		t.Skipf("Opik unavailable at %s: %v", opikURL(), err)
+		t.Fatalf("Opik unavailable at %s: %v", opikURL(), err)
 	}
 }
 

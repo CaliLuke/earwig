@@ -115,6 +115,9 @@ func TestListSessionsRejectsUnsafeLimit(t *testing.T) {
 	if _, _, err = s.ListSessions(SessionFilter{Limit: 1001}); err == nil {
 		t.Fatal("oversized limit accepted")
 	}
+	if _, _, err = s.ListSessions(SessionFilter{Limit: 20, MinTurns: -1}); err == nil {
+		t.Fatal("negative minimum turns accepted")
+	}
 }
 
 func TestSessionTimestampNormalizesCodexUnixSeconds(t *testing.T) {
@@ -154,5 +157,53 @@ func TestAcknowledgeGapWarnings(t *testing.T) {
 	stats, err := s.SessionStats()
 	if err != nil || stats.GapWarnings != 0 {
 		t.Fatalf("session stats: %#v err=%v", stats, err)
+	}
+}
+
+func TestListSessionsFiltersMinimumTurnsAndIndexedContent(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "spool.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	for _, id := range []string{"session-with-content", "empty-session"} {
+		if _, err = s.db.Exec(`INSERT INTO sessions(provider,session_id,cwd,summary,last_modified_ms) VALUES('codex-app-server',?,'/work/project','ordinary title',1)`, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err = s.db.Exec(`
+		INSERT INTO turns(trace_uuid,provider,session_id,turn_id,turn_status,started_at_ms,completed_at_ms,payload_json,content_hash,captured_at_ms)
+		VALUES('trace-search','codex-app-server','session-with-content','turn-search','completed',1,2,'{"turn":{"user_messages":[{"content":"permission denied"}]}}','one',3)
+	`); err != nil {
+		t.Fatal(err)
+	}
+
+	got, stats, err := s.ListSessions(SessionFilter{MinTurns: 1, Limit: 20})
+	if err != nil || stats.Total != 1 || len(got) != 1 || got[0].SessionID != "session-with-content" {
+		t.Fatalf("minimum turns: stats=%#v sessions=%#v err=%v", stats, got, err)
+	}
+	got, stats, err = s.ListSessions(SessionFilter{Search: "permission denied", Limit: 20})
+	if err != nil || stats.Total != 1 || len(got) != 1 || got[0].SessionID != "session-with-content" {
+		t.Fatalf("indexed search: stats=%#v sessions=%#v err=%v", stats, got, err)
+	}
+
+	if _, err = s.db.Exec(`UPDATE turns SET payload_json='{"turn":{"final_answer":"network recovered"}}',content_hash='two' WHERE trace_uuid='trace-search'`); err != nil {
+		t.Fatal(err)
+	}
+	got, stats, err = s.ListSessions(SessionFilter{Search: "permission denied", Limit: 20})
+	if err != nil || stats.Total != 0 || len(got) != 0 {
+		t.Fatalf("stale indexed search: stats=%#v sessions=%#v err=%v", stats, got, err)
+	}
+	got, stats, err = s.ListSessions(SessionFilter{Search: "network recovered", Limit: 20})
+	if err != nil || stats.Total != 1 || len(got) != 1 {
+		t.Fatalf("updated indexed search: stats=%#v sessions=%#v err=%v", stats, got, err)
+	}
+
+	if _, err = s.db.Exec(`DELETE FROM turns WHERE trace_uuid='trace-search'`); err != nil {
+		t.Fatal(err)
+	}
+	got, stats, err = s.ListSessions(SessionFilter{Search: "network recovered", Limit: 20})
+	if err != nil || stats.Total != 0 || len(got) != 0 {
+		t.Fatalf("deleted indexed search: stats=%#v sessions=%#v err=%v", stats, got, err)
 	}
 }

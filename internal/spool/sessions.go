@@ -41,6 +41,7 @@ type SessionFilter struct {
 	Project         string
 	Search          string
 	GapWarningsOnly bool
+	MinTurns        int
 	Limit           int
 }
 
@@ -71,11 +72,14 @@ func (s *Spool) ListSessions(filter SessionFilter) ([]CapturedSession, SessionLi
 	if filter.Limit < 1 || filter.Limit > 1000 {
 		return nil, SessionListStats{}, fmt.Errorf("session limit must be between 1 and 1000")
 	}
+	if filter.MinTurns < 0 {
+		return nil, SessionListStats{}, fmt.Errorf("minimum turn count must not be negative")
+	}
 	where, args := sessionFilterSQL(filter)
 	var stats SessionListStats
 	err := s.db.QueryRow(`
-		SELECT COUNT(*), COALESCE(SUM(CASE WHEN gap_warned = 1 THEN 1 ELSE 0 END), 0)
-		FROM sessions
+		SELECT COUNT(*), COALESCE(SUM(CASE WHEN s.gap_warned = 1 THEN 1 ELSE 0 END), 0)
+		FROM sessions s
 		WHERE `+where, args...).Scan(&stats.Total, &stats.GapWarnings)
 	if err != nil {
 		return nil, SessionListStats{}, err
@@ -154,26 +158,42 @@ func sessionFilterSQL(filter SessionFilter) (string, []any) {
 	if filter.GapWarningsOnly {
 		gapsOnly = 1
 	}
+	contentSearch := ""
+	if filter.Search != "" {
+		contentSearch = `"` + strings.ReplaceAll(filter.Search, `"`, `""`) + `"`
+	}
 	where := `
-		(? = '' OR provider = ?)
-		AND (? = 0 OR gap_warned = 1)
+		(? = '' OR s.provider = ?)
+		AND (? = 0 OR s.gap_warned = 1)
+		AND (? = 0 OR (
+			SELECT COUNT(*) FROM turns counted
+			WHERE counted.provider = s.provider AND counted.session_id = s.session_id
+		) >= ?)
 		AND (
 			? = ''
-			OR LOWER(COALESCE(cwd, '')) = LOWER(?)
-			OR SUBSTR(LOWER(COALESCE(cwd, '')), -(LENGTH(?) + 1)) = '/' || LOWER(?)
+			OR LOWER(COALESCE(s.cwd, '')) = LOWER(?)
+			OR SUBSTR(LOWER(COALESCE(s.cwd, '')), -(LENGTH(?) + 1)) = '/' || LOWER(?)
 		)
 		AND (
 			? = ''
-			OR INSTR(LOWER(COALESCE(summary, '')), LOWER(?)) > 0
-			OR INSTR(LOWER(COALESCE(cwd, '')), LOWER(?)) > 0
-			OR INSTR(LOWER(session_id), LOWER(?)) > 0
+			OR INSTR(LOWER(COALESCE(s.summary, '')), LOWER(?)) > 0
+			OR INSTR(LOWER(COALESCE(s.cwd, '')), LOWER(?)) > 0
+			OR INSTR(LOWER(s.session_id), LOWER(?)) > 0
+			OR (? <> '' AND EXISTS (
+				SELECT 1 FROM turn_search
+				WHERE turn_search.provider = s.provider
+					AND turn_search.session_id = s.session_id
+					AND turn_search MATCH ?
+			))
 		)
 	`
 	args := []any{
 		filter.Provider, filter.Provider,
 		gapsOnly,
+		filter.MinTurns, filter.MinTurns,
 		filter.Project, filter.Project, filter.Project, filter.Project,
 		filter.Search, filter.Search, filter.Search, filter.Search,
+		contentSearch, contentSearch,
 	}
 	return where, args
 }

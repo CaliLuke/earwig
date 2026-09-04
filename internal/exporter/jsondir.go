@@ -14,17 +14,23 @@ func (j JSONDir) TargetKey() string { return filepath.Clean(j.Dir) }
 func (j JSONDir) Health() error     { return os.MkdirAll(j.Dir, 0700) }
 
 func (j JSONDir) Export(rows []spool.Row) error {
-	if e := j.Health(); e != nil {
-		return e
+	if err := j.Health(); err != nil {
+		return err
 	}
-	for _, r := range rows {
-		d := filepath.Join(j.Dir, r.Provider, r.SessionID)
-		if e := os.MkdirAll(d, 0700); e != nil {
-			return e
-		}
-		if e := os.WriteFile(filepath.Join(d, r.TraceUUID+".json"), append([]byte(r.Payload), '\n'), 0600); e != nil {
-			return e
+	for _, row := range rows {
+		if err := j.WriteRow(row); err != nil {
+			return err
 		}
 	}
 	return nil
+}
+
+// WriteRow writes one captured turn. Call Health first when an empty export
+// must still create and validate the destination directory.
+func (j JSONDir) WriteRow(row spool.Row) error {
+	directory := filepath.Join(j.Dir, row.Provider, row.SessionID)
+	if err := os.MkdirAll(directory, 0700); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(directory, row.TraceUUID+".json"), append([]byte(row.Payload), '\n'), 0600)
 }
