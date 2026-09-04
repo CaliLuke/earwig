@@ -79,7 +79,9 @@ V3 — Hermetic end-to-end (`scripts/verify`)
   IDs in JSON/long output, orders by normalized provider activity, counts
   turns, generates globally unique short IDs, and applies provider, project,
   literal-search, gap, and limit filters without loading payloads. Exact and
-  unique-prefix detail lookups succeed; ambiguous prefixes fail explicitly.
+  unique-prefix detail lookups succeed. Ambiguous prefixes fail explicitly.
+  Warning acknowledgement clears selected or all markers without changing
+  session and turn rows.
 
 V4 — Live Opik integration (`scripts/verify-live`)
 --------------------------------------------------

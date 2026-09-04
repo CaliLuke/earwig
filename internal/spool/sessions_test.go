@@ -126,3 +126,33 @@ func TestSessionTimestampNormalizesCodexUnixSeconds(t *testing.T) {
 		t.Fatalf("Claude timestamp changed to %d", got)
 	}
 }
+
+func TestAcknowledgeGapWarnings(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "spool.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	for _, id := range []string{"session-one", "session-two"} {
+		if _, err = s.db.Exec(`INSERT INTO sessions(provider,session_id,gap_warned) VALUES('claude-code-agent-sdk',?,1)`, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	changed, err := s.AcknowledgeGapWarning("claude-code-agent-sdk", "session-one")
+	if err != nil || !changed {
+		t.Fatalf("selective acknowledgement: changed=%v err=%v", changed, err)
+	}
+	changed, err = s.AcknowledgeGapWarning("claude-code-agent-sdk", "session-one")
+	if err != nil || changed {
+		t.Fatalf("repeated acknowledgement: changed=%v err=%v", changed, err)
+	}
+	count, err := s.AcknowledgeAllGapWarnings()
+	if err != nil || count != 1 {
+		t.Fatalf("all acknowledgements: count=%d err=%v", count, err)
+	}
+	stats, err := s.SessionStats()
+	if err != nil || stats.GapWarnings != 0 {
+		t.Fatalf("session stats: %#v err=%v", stats, err)
+	}
+}

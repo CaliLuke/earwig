@@ -126,6 +126,8 @@ a configuration file.
   with `--project`, `--search`, `--provider`, or `--warnings`; use `--long` for
   full paths and IDs or `--json` for scripts.
 - `earwig sessions show <id-prefix>` shows complete metadata for one session.
+- `earwig sessions acknowledge <id-prefix>` clears one reviewed gap warning.
+  Use `--all` to clear all reviewed warnings. Captured turns remain unchanged.
 - `earwig status` reports daemon, capture, and exporter health in a readable
   summary. Add `--json` for machine-readable output.
 - `earwig stop` stops the running daemon.

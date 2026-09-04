@@ -199,6 +199,8 @@ func TestProviderAndLimitValidation(t *testing.T) {
 		{[]string{"sessions", "show", "abc"}, "at least 4 characters"},
 		{[]string{"sweep", "--session", "abc"}, "--session requires --provider"},
 		{[]string{"sweep", "--provider", "omp", "--session", "abc"}, "invalid omp session ID"},
+		{[]string{"sessions", "acknowledge"}, "provide one session ID or use --all"},
+		{[]string{"sessions", "acknowledge", "019f", "--all"}, "use either --all or one session ID"},
 	} {
 		assertCLIError(t, test.args, test.want)
 	}
@@ -210,6 +212,50 @@ func assertCLIError(t *testing.T, args []string, want string) {
 	exitCode := runCLI(args, strings.NewReader(""), &stdout, &stderr)
 	if exitCode != 1 || !strings.Contains(stderr.String(), want) {
 		t.Errorf("%v exit=%d stderr=%s", args, exitCode, stderr.String())
+	}
+}
+
+func TestSessionsAcknowledgeWarnings(t *testing.T) {
+	store, err := spool.Open(filepath.Join(t.TempDir(), "spool.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Config{SpoolPath: store.Path}
+	var stdout, stderr bytes.Buffer
+	app := &application{in: strings.NewReader(""), out: &stdout, err: &stderr, cfg: &cfg, spool: store}
+	defer app.close()
+
+	ids := []string{"019fb35e-cd1f-72c1-b95f-f265043655ec", "029fb35e-cd1f-72c1-b95f-f265043655ec"}
+	for _, id := range ids {
+		transcript := normalizer.Transcript{SchemaVersion: 1, Source: "claude-code-agent-sdk", Session: map[string]any{"id": id, "cwd": "/work/project", "created_at": int64(1), "last_modified": int64(2)}}
+		if _, err = store.UpsertTranscript(transcript, time.Now()); err != nil {
+			t.Fatal(err)
+		}
+		if err = store.MarkGapWarned(transcript.Source, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	root := newRootCommand(app)
+	root.SetArgs([]string{"sessions", "acknowledge", ids[0][:8]})
+	if err = root.Execute(); err != nil {
+		t.Fatalf("selective acknowledgement: %v\n%s", err, stderr.String())
+	}
+	stats, err := store.SessionStats()
+	if err != nil || stats.GapWarnings != 1 || !strings.Contains(stdout.String(), "Acknowledged 1 capture gap warning.") {
+		t.Fatalf("selective result: stats=%#v err=%v stdout=%s", stats, err, stdout.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	root = newRootCommand(app)
+	root.SetArgs([]string{"sessions", "acknowledge", "--all"})
+	if err = root.Execute(); err != nil {
+		t.Fatalf("all acknowledgement: %v\n%s", err, stderr.String())
+	}
+	stats, err = store.SessionStats()
+	if err != nil || stats.GapWarnings != 0 || !strings.Contains(stdout.String(), "Acknowledged 1 capture gap warning.") {
+		t.Fatalf("all result: stats=%#v err=%v stdout=%s", stats, err, stdout.String())
 	}
 }
 

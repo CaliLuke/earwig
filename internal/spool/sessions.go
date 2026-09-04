@@ -257,3 +257,23 @@ func shortestUniquePrefix(id string, all []string, minimum int) string {
 	}
 	return id
 }
+
+// AcknowledgeGapWarning clears one reviewed capture-gap warning.
+func (s *Spool) AcknowledgeGapWarning(provider, sessionID string) (bool, error) {
+	result, err := s.db.Exec(`UPDATE sessions SET gap_warned=0 WHERE provider=? AND session_id=? AND gap_warned=1`, provider, sessionID)
+	if err != nil {
+		return false, err
+	}
+	changed, err := result.RowsAffected()
+	return changed > 0, err
+}
+
+// AcknowledgeAllGapWarnings clears all reviewed capture-gap warnings.
+func (s *Spool) AcknowledgeAllGapWarnings() (int, error) {
+	result, err := s.db.Exec(`UPDATE sessions SET gap_warned=0 WHERE gap_warned=1`)
+	if err != nil {
+		return 0, err
+	}
+	changed, err := result.RowsAffected()
+	return int(changed), err
+}

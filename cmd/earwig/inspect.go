@@ -81,7 +81,7 @@ func newSessionsCommand(app *application) *cobra.Command {
 	cmd.Flags().BoolVarP(&longView, "long", "l", false, "show full paths, IDs, timestamps, and state")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "print machine-readable JSON")
 	_ = cmd.RegisterFlagCompletionFunc("provider", providerCompletion)
-	cmd.AddCommand(newSessionShowCommand(app))
+	cmd.AddCommand(newSessionShowCommand(app), newSessionAcknowledgeCommand(app))
 	return cmd
 }
 
@@ -118,6 +118,65 @@ func newSessionShowCommand(app *application) *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVar(&asJSON, "json", false, "print machine-readable JSON")
+	return cmd
+}
+
+func newSessionAcknowledgeCommand(app *application) *cobra.Command {
+	var all bool
+	cmd := &cobra.Command{
+		Use:   "acknowledge [session-id-or-prefix]",
+		Short: "Acknowledge reviewed capture gap warnings",
+		Args: func(_ *cobra.Command, args []string) error {
+			if all {
+				if len(args) != 0 {
+					return fmt.Errorf("use either --all or one session ID")
+				}
+				return nil
+			}
+			if len(args) == 0 {
+				return fmt.Errorf("provide one session ID or use --all")
+			}
+			if len(args) != 1 {
+				return fmt.Errorf("accepts one session ID")
+			}
+			if len(args[0]) < 4 {
+				return fmt.Errorf("session ID prefix must contain at least 4 characters")
+			}
+			return nil
+		},
+		RunE: func(_ *cobra.Command, args []string) error {
+			store, err := app.openSpool()
+			if err != nil {
+				return err
+			}
+			count := 0
+			if all {
+				count, err = store.AcknowledgeAllGapWarnings()
+			} else {
+				var session spool.CapturedSession
+				session, err = store.FindSession(args[0])
+				if err == nil {
+					var changed bool
+					changed, err = store.AcknowledgeGapWarning(session.Provider, session.SessionID)
+					if changed {
+						count = 1
+					}
+				}
+			}
+			if err != nil {
+				return err
+			}
+			_, err = fmt.Fprintf(app.out, "Acknowledged %d capture gap %s.\n", count, plural(count, "warning", "warnings"))
+			return err
+		},
+		ValidArgsFunction: func(_ *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+			if all || len(args) > 0 {
+				return nil, cobra.ShellCompDirectiveNoFileComp
+			}
+			return completeSessionIDs(app, toComplete)
+		},
+	}
+	cmd.Flags().BoolVar(&all, "all", false, "acknowledge all capture gap warnings")
 	return cmd
 }
 
@@ -415,6 +474,7 @@ func writeStatus(app *application, result statusResult) error {
 		}
 		_, _ = fmt.Fprintf(&report, "\nWarning: %s %s a capture gap.\n", comma(result.GapWarnings), noun)
 		_, _ = fmt.Fprintln(&report, "Run `earwig sessions --warnings` for details.")
+		_, _ = fmt.Fprintln(&report, "After review, run `earwig sessions acknowledge <id>` or `earwig sessions acknowledge --all`.")
 	}
 	_, err := io.WriteString(app.out, report.String())
 	return err

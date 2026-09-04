@@ -256,6 +256,10 @@ conspicuous warning (session, compaction time, window) in the log and
 `status`. A session with no prior Earwig checkpoint is adoption history, not a
 known daemon blind window, and is exempt. No fuzzier heuristics.
 
+A warning remains active until the operator reviews and acknowledges it.
+Acknowledgement clears only the warning marker. It does not change captured
+sessions or turns. A later compaction gap activates the warning again.
+
 Commands and process model
 --------------------------
 
@@ -284,6 +288,8 @@ Commands and process model
   JSON filters never load turn payloads.
 - `earwig sessions show <id-prefix>` — resolve an exact ID or globally unique
   prefix and show the session's complete metadata without loading its turns.
+- `earwig sessions acknowledge <id-prefix>|--all` — clear reviewed gap
+  warnings without changing captured content.
   Codex numeric activity timestamps are normalized from Unix seconds into the
   spool's millisecond convention.
 - `earwig stop`, `earwig prune`, `earwig export --dir …`.
