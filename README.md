@@ -39,7 +39,7 @@ Earwig reads OMP sessions from `~/.omp/agent/sessions` by default. Set
 
 ## Build and run
 
-Building from source requires Go 1.26.6 or newer and Node.js 18 or newer.
+Building from source requires Go 1.26.10 or newer and Node.js 18 or newer.
 
 ```sh
 npm ci --prefix helpers/claude-reader
