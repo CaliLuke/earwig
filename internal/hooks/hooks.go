@@ -110,19 +110,25 @@ func removeAt(path string) error {
 	return writeSettings(path, x)
 }
 
-// SessionID reads the documented Claude hook JSON payload. The session ID is
-// never interpolated into a shell command; it remains data until the sweep.
-func SessionID(r io.Reader) (string, error) {
-	var input struct {
-		SessionID string `json:"session_id"`
-	}
+type Input struct {
+	SessionID string `json:"session_id"`
+	CWD       string `json:"cwd"`
+}
+
+// ReadInput reads the documented Claude hook JSON payload. Both fields remain
+// data, never shell-expanded commands. Older payloads may omit cwd.
+func ReadInput(r io.Reader) (Input, error) {
+	var input Input
 	if err := json.NewDecoder(io.LimitReader(r, 1<<20)).Decode(&input); err != nil {
-		return "", fmt.Errorf("read Claude hook input: %w", err)
+		return Input{}, fmt.Errorf("read Claude hook input: %w", err)
 	}
 	if input.SessionID == "" {
-		return "", fmt.Errorf("claude hook input omitted session_id")
+		return Input{}, fmt.Errorf("claude hook input omitted session_id")
 	}
-	return input.SessionID, nil
+	if input.CWD != "" && !filepath.IsAbs(input.CWD) {
+		return Input{}, fmt.Errorf("claude hook cwd must be absolute")
+	}
+	return input, nil
 }
 
 func readSettings(path string) (map[string]any, error) {

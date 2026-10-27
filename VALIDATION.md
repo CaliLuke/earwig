@@ -148,11 +148,25 @@ V6 — User-state safety invariants (`scripts/verify`, fixture copies only)
   byte-identical to the original.
 - `hooks install` is idempotent: installing twice leaves exactly one managed
   entry per event.
+- All three lifecycle hooks capture and export synchronously using the supplied
+  session and workspace, without enumerating sessions. Workspace exclusions and
+  legacy payloads without `cwd` remain supported.
 - Settings that are invalid JSON, or where `hooks.<event>` has an unexpected
   type, are refused **without writing anything** — file unchanged, verified
   by hash.
 - Tests never touch `~/.claude/settings.json`: a harness guard fails the
   suite if the settings path resolves outside the test temp directory.
+
+Performance regression checks
+-----------------------------
+
+- `go test ./internal/spool -run '^$' -bench BenchmarkExportPlanning -benchmem`
+  measures an empty export queue with 256 already-exported 64 KiB payloads.
+- Pending-export tests verify filtering before the batch limit and complete
+  payload retrieval. Migration tests verify existing turns survive index creation.
+- Before releasing changes to capture performance, compare hook and status
+  latency on an isolated database snapshot. Measure initial index construction
+  separately from steady-state operation, including sessions with completed turns.
 - Supported-surface tripwire: a check rejects direct reads of undocumented
   Claude and Codex session files. The OMP reader is exempt because OMP
   documents its JSONL entry model.

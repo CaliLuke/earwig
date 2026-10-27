@@ -68,6 +68,10 @@ func Open(path string) (*Spool, error) {
 		_ = db.Close()
 		return nil, e
 	}
+	if e = s.ensureMetadataIndexes(); e != nil {
+		_ = db.Close()
+		return nil, e
+	}
 	if e = os.Chmod(path, 0600); e != nil {
 		_ = db.Close()
 		return nil, e

@@ -127,3 +127,19 @@ func TestGapDetectionExemptsFirstSeenSession(t *testing.T) {
 		t.Fatal("post-adoption compaction was not detected")
 	}
 }
+
+func TestDirectClaudeSweepHonorsWorkspaceRoots(t *testing.T) {
+	s, err := spool.Open(filepath.Join(t.TempDir(), "spool.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	sw := &Sweeper{Config: config.Config{Claude: true, WorkspaceRoots: []string{"/allowed"}, ClaudeHelper: "/must-not-run"}, Spool: s}
+	if err = sw.Sweep(context.Background(), SweepOptions{Provider: "claude", Session: "0aaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", CWD: "/outside"}); err != nil {
+		t.Fatal(err)
+	}
+	total, _, err := s.Stats()
+	if err != nil || total != 0 {
+		t.Fatalf("outside workspace captured: %d, %v", total, err)
+	}
+}

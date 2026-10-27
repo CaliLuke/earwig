@@ -24,7 +24,17 @@ func (s *Spool) queryRows(query string, args ...any) ([]Row, error) {
 }
 
 func (s *Spool) Pending(exporter string, limit int) ([]Row, error) {
-	return s.queryRows(`SELECT t.trace_uuid,t.provider,t.session_id,t.turn_id,t.turn_status,t.started_at_ms,t.completed_at_ms,t.payload_json,t.content_hash,t.captured_at_ms FROM turns t LEFT JOIN exports e ON e.trace_uuid=t.trace_uuid AND e.exporter=? WHERE e.trace_uuid IS NULL OR e.content_hash<>t.content_hash ORDER BY t.started_at_ms LIMIT ?`, exporter, limit)
+	return s.queryRows(`
+		WITH candidates AS MATERIALIZED (
+			SELECT t.rowid
+			FROM turns t INDEXED BY turns_export_candidates
+			LEFT JOIN exports e ON e.trace_uuid=t.trace_uuid AND e.exporter=?
+			WHERE e.trace_uuid IS NULL OR e.content_hash<>t.content_hash
+			ORDER BY t.started_at_ms, t.trace_uuid LIMIT ?
+		)
+		SELECT t.trace_uuid,t.provider,t.session_id,t.turn_id,t.turn_status,t.started_at_ms,t.completed_at_ms,t.payload_json,t.content_hash,t.captured_at_ms
+		FROM candidates c JOIN turns t ON t.rowid=c.rowid
+		ORDER BY t.started_at_ms, t.trace_uuid`, exporter, limit)
 }
 
 // RowsForSession returns all captured turns for one provider session in
@@ -74,9 +84,22 @@ func scanRow(scanner rowScanner, row *Row) error {
 
 // PendingFor excludes only permanent failures for the same payload and
 // exporter target. A content change or target configuration change makes the
-// row eligible automatically.
+// row eligible automatically. Materialize only the eligible row IDs first so
+// SQLite reads payloads after filtering and limiting, never during planning.
 func (s *Spool) PendingFor(exporter, targetKey string, limit int) ([]Row, error) {
-	return s.queryRows(`SELECT t.trace_uuid,t.provider,t.session_id,t.turn_id,t.turn_status,t.started_at_ms,t.completed_at_ms,t.payload_json,t.content_hash,t.captured_at_ms FROM turns t LEFT JOIN exports e ON e.trace_uuid=t.trace_uuid AND e.exporter=? LEFT JOIN export_failures f ON f.trace_uuid=t.trace_uuid AND f.exporter=? WHERE (e.trace_uuid IS NULL OR e.content_hash<>t.content_hash) AND NOT (COALESCE(f.permanent,0)=1 AND f.content_hash=t.content_hash AND f.target_key=?) ORDER BY t.started_at_ms LIMIT ?`, exporter, exporter, targetKey, limit)
+	return s.queryRows(`
+		WITH candidates AS MATERIALIZED (
+			SELECT t.rowid
+			FROM turns t INDEXED BY turns_export_candidates
+			LEFT JOIN exports e ON e.trace_uuid=t.trace_uuid AND e.exporter=?
+			LEFT JOIN export_failures f ON f.trace_uuid=t.trace_uuid AND f.exporter=?
+			WHERE (e.trace_uuid IS NULL OR e.content_hash<>t.content_hash)
+				AND NOT (COALESCE(f.permanent,0)=1 AND f.content_hash=t.content_hash AND f.target_key=?)
+			ORDER BY t.started_at_ms, t.trace_uuid LIMIT ?
+		)
+		SELECT t.trace_uuid,t.provider,t.session_id,t.turn_id,t.turn_status,t.started_at_ms,t.completed_at_ms,t.payload_json,t.content_hash,t.captured_at_ms
+		FROM candidates c JOIN turns t ON t.rowid=c.rowid
+		ORDER BY t.started_at_ms, t.trace_uuid`, exporter, exporter, targetKey, limit)
 }
 
 func (s *Spool) PendingCount(exporter string) (int, error) {

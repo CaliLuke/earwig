@@ -15,7 +15,7 @@ import (
 	"github.com/CaliLuke/earwig/internal/spool"
 )
 
-type SweepOptions struct{ Session, Provider string }
+type SweepOptions struct{ Session, Provider, CWD string }
 type Sweeper struct {
 	Config config.Config
 	Spool  *spool.Spool
@@ -93,6 +93,14 @@ func (s *Sweeper) claude(ctx context.Context, o SweepOptions, now time.Time) err
 	if len(s.Config.WorkspaceRoots) == 0 {
 		return nil
 	}
+	// Hooks already identify the session and workspace. Keep the global list
+	// for polling and older callers that provide only a session ID.
+	if o.Session != "" && o.CWD != "" {
+		if !config.Allowed(s.Config, o.CWD) {
+			return nil
+		}
+		return s.captureClaude(ctx, r, o.Session, o.CWD, now)
+	}
 	list, e := r.List(ctx)
 	if e != nil {
 		return e
@@ -113,24 +121,30 @@ func (s *Sweeper) claude(ctx context.Context, o SweepOptions, now time.Time) err
 				continue
 			}
 		}
-		info, msg, e := r.Read(ctx, v.ID, v.CWD)
-		if e != nil {
-			readErrors = append(readErrors, fmt.Errorf("read Claude session %s: %w", v.ID, e))
-			continue
-		}
-		t, e := normalizer.NormalizeClaude(info, msg)
-		if e != nil {
-			return e
-		}
-		gapped := s.gap(t)
-		if _, e = s.Spool.UpsertTranscript(t, now); e != nil {
-			return e
-		}
-		if gapped {
-			_ = s.Spool.MarkGapWarned(t.Source, v.ID)
+		if e := s.captureClaude(ctx, r, v.ID, v.CWD, now); e != nil {
+			readErrors = append(readErrors, e)
 		}
 	}
 	return errors.Join(readErrors...)
+}
+
+func (s *Sweeper) captureClaude(ctx context.Context, r provider.ClaudeReader, id, cwd string, now time.Time) error {
+	info, messages, err := r.Read(ctx, id, cwd)
+	if err != nil {
+		return fmt.Errorf("read Claude session %s: %w", id, err)
+	}
+	transcript, err := normalizer.NormalizeClaude(info, messages)
+	if err != nil {
+		return err
+	}
+	gapped := s.gap(transcript)
+	if _, err = s.Spool.UpsertTranscript(transcript, now); err != nil {
+		return err
+	}
+	if gapped {
+		return s.Spool.MarkGapWarned(transcript.Source, id)
+	}
+	return nil
 }
 func (s *Sweeper) codex(ctx context.Context, o SweepOptions, now time.Time) error {
 	var readErrors []error

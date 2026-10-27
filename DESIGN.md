@@ -180,11 +180,22 @@ without one unbounded JSON-RPC response. The trigger stack exists for Claude.
 confirmation, then writes `PreCompact`, `Stop`, and `SessionEnd` entries to
 the user's Claude Code settings; `hooks remove` deletes exactly those
 entries. Hook commands invoke the managed `earwig hook claude` entrypoint,
-which reads the documented hook JSON from stdin, validates `session_id`, and
-runs a targeted sweep in-process. Session IDs are never shell-expanded or
+which reads the documented hook JSON from stdin, validates `session_id` and
+the optional absolute `cwd`, and runs a targeted sweep in-process. Hooks with
+`cwd` read that session directly through the SDK instead of enumerating every
+session. Workspace-root filtering still applies; older payloads without `cwd`
+retain the global lookup. Capture and export finish synchronously before the
+hook returns. Session IDs and paths are never shell-expanded or
 interpolated into commands, and the hook entrypoint always exits 0 so a broken
 capture path can never block the user's session.
 The default (no hooks) still works through fs events and polling.
+
+Export planning uses a covering metadata index and materializes eligible row
+IDs before loading payloads. Already-exported or quarantined transcripts are
+not read just to determine that there is no work. A separate session metadata
+index covers session counts, capture timestamps, and status queries. Existing
+spools build these indexes once on upgrade; transcript payloads and export
+checkpoints are preserved.
 
 Spool
 -----

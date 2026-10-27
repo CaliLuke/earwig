@@ -108,8 +108,8 @@ func runHook(args []string, in io.Reader, errOut io.Writer) {
 		_, _ = fmt.Fprintln(errOut, "earwig: invalid managed hook invocation")
 		return
 	}
-	sessionID, err := hooks.SessionID(in)
-	if err != nil || !provider.ValidClaudeID(sessionID) {
+	input, err := hooks.ReadInput(in)
+	if err != nil || !provider.ValidClaudeID(input.SessionID) {
 		if err == nil {
 			err = fmt.Errorf("invalid Claude session ID")
 		}
@@ -135,7 +135,7 @@ func runHook(args []string, in io.Reader, errOut io.Writer) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
-	if err = sw.Sweep(ctx, daemon.SweepOptions{Session: sessionID, Provider: "claude"}); err != nil {
+	if err = sw.Sweep(ctx, daemon.SweepOptions{Session: input.SessionID, Provider: "claude", CWD: input.CWD}); err != nil {
 		_, _ = fmt.Fprintln(errOut, "earwig:", err)
 	}
 }

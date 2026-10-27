@@ -208,9 +208,9 @@ func TestInstallReplacesLegacyShellExpandedHook(t *testing.T) {
 
 func TestSessionIDReadsHookJSON(t *testing.T) {
 	id := "0aaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
-	got, err := SessionID(strings.NewReader(`{"session_id":"` + id + `","hook_event_name":"Stop"}`))
-	if err != nil || got != id {
-		t.Fatalf("%q, %v", got, err)
+	got, err := ReadInput(strings.NewReader(`{"session_id":"` + id + `","hook_event_name":"Stop"}`))
+	if err != nil || got.SessionID != id {
+		t.Fatalf("%+v, %v", got, err)
 	}
 }
 
