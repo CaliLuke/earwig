@@ -41,7 +41,7 @@ CLAUDE_CONFIG_DIR="$claude_config" "$package_dir/claude-reader" read \
 	0aaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee --dir "$distribution_tmp/workspace" \
 	| grep -F 'assistant' >/dev/null
 config_path="$distribution_tmp/config.toml"
-printf 'workspace_roots = [%s]\nclaude = true\ncodex = false\nspool_path = %s\njsondir = %s\n' \
+printf 'workspace_roots = [%s]\nclaude = true\ncodex = false\nomp = false\nspool_path = %s\njsondir = %s\n' \
 	"\"$distribution_tmp/workspace\"" "\"$distribution_tmp/spool.sqlite\"" "\"$distribution_tmp/json\"" > "$config_path"
 EARWIG_CONFIG="$config_path" "$package_dir/earwig" doctor | grep -Fx ready >/dev/null
 
