@@ -155,14 +155,14 @@ func startOpikTestStack(ctx context.Context) (*opikTestStack, string, error) {
 		return fail(err)
 	}
 
-	if _, err := stack.start(ctx, "minio", testcontainers.ContainerRequest{
-		Image: "minio/minio:RELEASE.2025-03-12T18-04-18Z",
+	if _, err := stack.start(ctx, "s3", testcontainers.ContainerRequest{
+		Image: "rustfs/rustfs:1.0.3@sha256:9ca9559533b537d10482fe923288b676ad08f92a7069d9a17327fbae3cab688b",
 		Env: map[string]string{
-			"MINIO_ROOT_USER":     "THAAIOSFODNN7EXAMPLE",
-			"MINIO_ROOT_PASSWORD": "LESlrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+			"RUSTFS_ACCESS_KEY":     "THAAIOSFODNN7EXAMPLE",
+			"RUSTFS_SECRET_KEY":     "LESlrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+			"RUSTFS_CONSOLE_ENABLE": "false",
 		},
-		Cmd: []string{"server", "--console-address", ":9090", "/data"},
-		WaitingFor: wait.ForExec([]string{"curl", "-f", "http://127.0.0.1:9000/minio/health/live"}).
+		WaitingFor: wait.ForExec([]string{"curl", "-f", "http://127.0.0.1:9000/health"}).
 			WithStartupTimeout(2 * time.Minute),
 	}); err != nil {
 		return fail(err)
@@ -190,7 +190,7 @@ func startOpikTestStack(ctx context.Context) (*opikTestStack, string, error) {
 			"AWS_ACCESS_KEY_ID":                 "THAAIOSFODNN7EXAMPLE",
 			"AWS_SECRET_ACCESS_KEY":             "LESlrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
 			"IS_MINIO":                          "true",
-			"S3_URL":                            "http://minio:9000",
+			"S3_URL":                            "http://s3:9000",
 			"PYTHON_EVALUATOR_URL":              "http://127.0.0.1:1",
 			"TOGGLE_OPIK_AI_ENABLED":            "false",
 			"TOGGLE_GUARDRAILS_ENABLED":         "false",
